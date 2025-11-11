@@ -91,6 +91,19 @@ use std::fs::File;
 use log::{trace, debug, info, warn};
 use env_logger::Env;
 
+use std::sync::OnceLock;
+
+// Compile regex patterns once for performance
+static EUI_64_REGEX: OnceLock<regex::Regex> = OnceLock::new();
+static HEX_REGEX: OnceLock<regex::Regex> = OnceLock::new();
+
+fn get_eui_64_regex() -> &'static regex::Regex {
+    EUI_64_REGEX.get_or_init(|| regex::Regex::new(r"^([A-F\d]{2}-){7}[A-F\d]{2}$").unwrap())
+}
+
+fn get_hex_regex() -> &'static regex::Regex {
+    HEX_REGEX.get_or_init(|| regex::Regex::new(r"^(?:[A-Fa-f0-9]{2})*$").unwrap())
+}
 
 pub const SECG_EVEN: u8 = 0x02;
 pub const SECG_ODD: u8 = 0x03;
@@ -234,39 +247,39 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
 /******************************************************************************************************/
 // Parse a DER encoded X509 and encode it as C509, re-encode back to X.509 and check if successful
 fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
-    let oi = input.clone();
-    let ooi = input.clone();
-    let parsed_cert = parse_x509_cert(input);
+    // Avoid unnecessary clones - we only need to compare once
+    let parsed_cert = parse_x509_cert(input.clone());
     let reversed_cert = parse_c509_cert(lcbor_array(&parsed_cert.cbor), false);
-    //let rev_copy = reversed_cert.der.clone();
 
     let ndate = chrono::Local::now();
     let ts = ndate.format("%Y-%m-%d_%H:%M:%S.%s");
 
-    let correct_input_path = "../could_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
-    let failed_input_path = "../failed_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
-    let write_path; 
-
-    if reversed_cert.der == oi {
-        info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), correct_input_path);
-        write_path = &correct_input_path;
+    // Use format! instead of string concatenation for better performance
+    let (write_path, _success) = if reversed_cert.der == input {
+        let path = format!("../could_convert/{}_{}_{}",  host, sub_no, ts);
+        info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", 
+              host, no, input.len(), reversed_cert.der.len(), path);
+        (path, true)
     } else {
+        let path = format!("../failed_convert/{}_{}_{}",  host, sub_no, ts);
         print_str_warning("File re-encoding failure");
-        warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), failed_input_path);
-        write_path = &failed_input_path;
-    }
-    let write_input_path = write_path.to_owned() + ".input.hex";
-    let write_output_path = write_path.to_owned() + ".output.hex";
+        warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", 
+              host, no, input.len(), reversed_cert.der.len(), path);
+        (path, false)
+    };
+
+    let write_input_path = format!("{}.input.hex", write_path);
+    let write_output_path = format!("{}.output.hex", write_path);
     let mut input_file = File::create(write_input_path).expect("File not found");
     let mut output_file = File::create(write_output_path).expect("File not found");
 
-    for byte in oi {
+    for byte in &input {
         let _ = write!(input_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
-    for byte in reversed_cert.der {
+    for byte in &reversed_cert.der {
         let _ = write!(output_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
-    Cert { der: ooi, cbor: Vec::new() }
+    Cert { der: input, cbor: Vec::new() }
 }
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -515,12 +528,10 @@ fn cbor_name(b: &[u8]) -> Vec<u8> {
      for a total length of 7.
     *Otherwise it is encoded as a CBOR text string.
     */
-    let eui_64 = regex::Regex::new(r"^([A-F\d]{2}-){7}[A-F\d]{2}$").unwrap();
-    let is_hex = regex::Regex::new(r"^(?:[A-Fa-f0-9]{2})*$").unwrap();
     if vec.len() == 2 && vec[0] == [ATT_COMMON_NAME as u8] {
         //let cn = from_utf8(&vec[0][1..]).unwrap();
         vec.remove(0);
-        if eui_64.is_match(from_utf8(&vec[0][1..]).unwrap()) {
+        if get_eui_64_regex().is_match(from_utf8(&vec[0][1..]).unwrap()) {
             vec[0].retain(|&x| x != b'-' && x != 0x77); // 0x77 = text string length 23
             if &vec[0][6..10] == b"FFFE" {
                 vec[0].drain(6..10);
@@ -528,7 +539,7 @@ fn cbor_name(b: &[u8]) -> Vec<u8> {
             vec[0].insert(0, '1' as u8);
             vec[0].insert(0, '0' as u8);
             vec[0] = lcbor_bytes(&hex::decode(&vec[0]).unwrap());
-        } else if is_hex.is_match(from_utf8(&vec[0][1..]).unwrap()) {
+        } else if get_hex_regex().is_match(from_utf8(&vec[0][1..]).unwrap()) {
             vec[0][0] = '0' as u8; //overwrite the added utf8 text marker at the start
             vec[0].insert(0, '0' as u8);
             vec[0] = lcbor_bytes(&hex::decode(&vec[0]).unwrap());
@@ -571,10 +582,18 @@ fn cbor_alg_id(b: &[u8]) -> Vec<u8> {
 // CBOR encodes a DER encoded ECDSA signature value
 fn cbor_ecdsa(b: &[u8]) -> Vec<u8> {
     let signature_seq = lder_vec(b, ASN1_SEQ);
-    let r = lder_uint(signature_seq[0]).to_vec();
-    let s = lder_uint(signature_seq[1]).to_vec();
+    let r = lder_uint(signature_seq[0]);
+    let s = lder_uint(signature_seq[1]);
     let max = std::cmp::max(r.len(), s.len());
-    lcbor_bytes(&[vec![0; max - r.len()], r, vec![0; max - s.len()], s].concat())
+    
+    // Optimize: Pre-allocate result buffer to avoid multiple allocations
+    let mut result = Vec::with_capacity(max * 2);
+    result.extend(std::iter::repeat(0).take(max - r.len()));
+    result.extend_from_slice(r);
+    result.extend(std::iter::repeat(0).take(max - s.len()));
+    result.extend_from_slice(s);
+    
+    lcbor_bytes(&result)
 }
 fn cbor_opt_array(vec: &[Vec<u8>], t: u8) -> Vec<u8> {
     if vec.len() == 2 && vec[0] == [t] {
@@ -1140,12 +1159,19 @@ fn cbor_ext_sct(b: &[u8], not_before: &[u8]) -> Vec<u8> {
 
         let signature_seq = lder_vec(&sct[47..], ASN1_SEQ);
         trace!("ENCODING EXT_SCT_LIST TO CBOR: working with signature_seq of len {}: {:02x?}", signature_seq.len(), signature_seq);
-        let r = lder_uint(signature_seq[0]).to_vec();
-        let s = lder_uint(signature_seq[1]).to_vec();
+        let r = lder_uint(signature_seq[0]);
+        let s = lder_uint(signature_seq[1]);
         let max = std::cmp::max(r.len(), s.len());
-        let signature_ecdsa = &[vec![0; max - r.len()], r, vec![0; max - s.len()], s].concat();
+        
+        // Optimize: Pre-allocate result buffer to avoid multiple allocations
+        let mut signature_ecdsa = Vec::with_capacity(max * 2);
+        signature_ecdsa.extend(std::iter::repeat(0).take(max - r.len()));
+        signature_ecdsa.extend_from_slice(r);
+        signature_ecdsa.extend(std::iter::repeat(0).take(max - s.len()));
+        signature_ecdsa.extend_from_slice(s);
+        
         trace!("ENCODING EXT_SCT_LIST TO CBOR: pushing signature of len {}: {:02x?}", signature_ecdsa.len(), signature_ecdsa);
-        vec.push(lcbor_bytes(signature_ecdsa));
+        vec.push(lcbor_bytes(&signature_ecdsa));
     }
     lcbor_array(&vec)
 }
@@ -2334,10 +2360,12 @@ fn decompress_ecc_key(pub_key_x: Vec<u8>, is_even: bool, ecc_type_id: i64) -> Ve
         }
     };
     //let big_int = &&x;
-    let y2 = (pow(x.clone(), 3) + &mc.a * &x.clone() + &mc.b) % &mc.p;
+    // Optimize: Compute x^3 efficiently
+    let x_cubed = pow(x.clone(), 3);
+    let y2 = (x_cubed + &mc.a * &x + &mc.b) % &mc.p;
     let mut y = y2.modpow(&((&mc.p + BigInt::one()) / BigInt::from(4)), &mc.p);
 
-    let y_is_even = y.clone() % 2 == BigInt::zero();
+    let y_is_even = &y % 2 == BigInt::zero();
     //  let mut ys = y.clone();
     //let mut y_inv = y.clone();
 
@@ -2615,107 +2643,107 @@ pub fn parse_cbor_sig_info(sig_alg: &Value, sig_val: &Value) -> (Vec<u8>, Vec<u8
                 SIG_RSA_V15_SHA1 => {
                     oid = SIG_RSA_V15_SHA1_OID.as_bytes().to_vec(); //TODO check param
                     param = ASN1_NULL.to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                 }
                 SIG_ECDSA_SHA1 => {
                     oid = SIG_ECDSA_SHA1_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                 }
                 SIG_ECDSA_SHA256 => {
                     oid = SIG_ECDSA_SHA256_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                     //  panic!("not now");
                 }
                 SIG_ECDSA_SHA384 => {
                     oid = SIG_ECDSA_SHA384_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_ECDSA_SHA512 => {
                     oid = SIG_ECDSA_SHA512_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_ECDSA_SHAKE128 => {
                     oid = SIG_ECDSA_SHA512_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_ECDSA_SHAKE256 => {
                     oid = SIG_ECDSA_SHAKE256_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_ED25519 => {
                     oid = SIG_ED25519_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_ED448 => {
                     oid = SIG_ED448_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 //MAC based
                 SIG_SHA256_HMAC_SHA256 => {
                     oid = SIG_SHA256_HMAC_SHA256_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_mac_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_mac_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_SHA384_HMAC_SHA384 => {
                     oid = SIG_SHA384_HMAC_SHA384_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_mac_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_mac_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_SHA512_HMAC_SHA512 => {
                     oid = SIG_SHA512_HMAC_SHA512_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_mac_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_mac_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 //RSA based
                 SIG_RSA_V15_SHA256 => {
                     oid = SIG_RSA_V15_SHA256_OID.as_bytes().to_vec();
                     param = ASN1_NULL.to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_V15_SHA384 => {
                     oid = SIG_RSA_V15_SHA384_OID.as_bytes().to_vec();
                     param = ASN1_NULL.to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_V15_SHA512 => {
                     oid = SIG_RSA_V15_SHA512_OID.as_bytes().to_vec();
                     param = ASN1_NULL.to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_PSS_SHA256 => {
                     oid = SIG_RSA_PSS_SHA256_OID.as_bytes().to_vec();
                     //param = TODO
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_PSS_SHA384 => {
                     oid = SIG_RSA_PSS_SHA384_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_PSS_SHA512 => {
                     oid = SIG_RSA_PSS_SHA512_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_PSS_SHAKE128 => {
                     oid = SIG_RSA_PSS_SHAKE128_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_PSS_SHAKE256 => {
                     oid = SIG_RSA_PSS_SHAKE256_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 //Some odd ones, not yet supported
@@ -2750,29 +2778,29 @@ pub fn parse_cbor_sig_info(sig_alg: &Value, sig_val: &Value) -> (Vec<u8>, Vec<u8
 //***************************************************************************************************************************************
 //use asn1_rs::{BitString, Sequence, Integer, FromBer, ToDer};
 //use asn1_rs::{BitString, Sequence, Integer};
-pub fn parse_cbor_ecc_sig_value(sig_val_bytes: Vec<u8>) -> Vec<u8> {
+pub fn parse_cbor_ecc_sig_value(sig_val_bytes: &[u8]) -> Vec<u8> {
     let mut result: Vec<Vec<u8>> = Vec::new();
     //let mut writer = Vec::new();
 
 
 
     let start_r_index = if sig_val_bytes[0] == 0 { 1 } else { 0 };
-    let r = sig_val_bytes[start_r_index..sig_val_bytes.len() / 2].to_vec();
+    let r = &sig_val_bytes[start_r_index..sig_val_bytes.len() / 2];
     trace!("parse_cbor_ecc_sig_value, restored r: {:02?}", r);
 
     let midpoint = if sig_val_bytes[sig_val_bytes.len() / 2] == 0 { sig_val_bytes.len() / 2+1 } else { sig_val_bytes.len() / 2 };         
-    let s = sig_val_bytes[midpoint..sig_val_bytes.len()].to_vec();
+    let s = &sig_val_bytes[midpoint..sig_val_bytes.len()];
     trace!("parse_cbor_ecc_sig_value, restored s: {:02?}", s);
     
-    result.push(lder_to_pos_int(r));
-    result.push(lder_to_pos_int(s));
+    result.push(lder_to_pos_int(r.to_vec()));
+    result.push(lder_to_pos_int(s.to_vec()));
 
     lder_to_bit_str(lder_to_seq(result))
 }
-pub fn parse_cbor_rsa_sig_value(sig_val_bytes: Vec<u8>) -> Vec<u8> {
-    lder_to_bit_str(sig_val_bytes)
+pub fn parse_cbor_rsa_sig_value(sig_val_bytes: &[u8]) -> Vec<u8> {
+    lder_to_bit_str(sig_val_bytes.to_vec())
 }
-pub fn parse_cbor_mac_sig_value(_: Vec<u8>) -> Vec<u8> {
+pub fn parse_cbor_mac_sig_value(_: &[u8]) -> Vec<u8> {
     panic!("Reconstruction of MAC based signatures not yet supported");
 }
 //***************************************************************************************************************************************
