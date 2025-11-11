@@ -90,6 +90,7 @@ use std::fs::File;
 
 use log::{trace, debug, info, warn};
 use env_logger::Env;
+use lazy_static::lazy_static;
 
 
 pub const SECG_EVEN: u8 = 0x02;
@@ -110,6 +111,12 @@ pub const PRINT_TLS: bool = false;
 
 pub const WRITE_X509: bool = true;
 pub const WRITE_C509: bool = true;
+
+// Cached regex patterns for improved performance
+lazy_static! {
+    static ref EUI_64_REGEX: regex::Regex = regex::Regex::new(r"^([A-F\d]{2}-){7}[A-F\d]{2}$").unwrap();
+    static ref IS_HEX_REGEX: regex::Regex = regex::Regex::new(r"^(?:[A-Fa-f0-9]{2})*$").unwrap();
+}
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -235,16 +242,16 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
 // Parse a DER encoded X509 and encode it as C509, re-encode back to X.509 and check if successful
 fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
     let oi = input.clone();
-    let ooi = input.clone();
-    let parsed_cert = parse_x509_cert(input);
+    let ooi = input;
+    let parsed_cert = parse_x509_cert(ooi.clone());
     let reversed_cert = parse_c509_cert(lcbor_array(&parsed_cert.cbor), false);
     //let rev_copy = reversed_cert.der.clone();
 
     let ndate = chrono::Local::now();
     let ts = ndate.format("%Y-%m-%d_%H:%M:%S.%s");
 
-    let correct_input_path = "../could_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
-    let failed_input_path = "../failed_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
+    let correct_input_path = format!("../could_convert/{}_{}_{}",  host, sub_no, ts);
+    let failed_input_path = format!("../failed_convert/{}_{}_{}",  host, sub_no, ts);
     let write_path; 
 
     if reversed_cert.der == oi {
@@ -255,17 +262,25 @@ fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
         warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), failed_input_path);
         write_path = &failed_input_path;
     }
-    let write_input_path = write_path.to_owned() + ".input.hex";
-    let write_output_path = write_path.to_owned() + ".output.hex";
-    let mut input_file = File::create(write_input_path).expect("File not found");
-    let mut output_file = File::create(write_output_path).expect("File not found");
+    let write_input_path = format!("{}.input.hex", write_path);
+    let write_output_path = format!("{}.output.hex", write_path);
+    let mut input_file = std::io::BufWriter::new(File::create(write_input_path).expect("File not found"));
+    let mut output_file = std::io::BufWriter::new(File::create(write_output_path).expect("File not found"));
 
-    for byte in oi {
-        let _ = write!(input_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
+    // Pre-allocate string buffer for better performance
+    let mut hex_string = String::with_capacity(oi.len() * 3);
+    for byte in &oi {
+        use std::fmt::Write as FmtWrite;
+        let _ = write!(hex_string, "{:02X} ", byte);
     }
-    for byte in reversed_cert.der {
-        let _ = write!(output_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
+    let _ = write!(input_file, "{}", hex_string);
+    
+    hex_string.clear();
+    for byte in &reversed_cert.der {
+        use std::fmt::Write as FmtWrite;
+        let _ = write!(hex_string, "{:02X} ", byte);
     }
+    let _ = write!(output_file, "{}", hex_string);
     Cert { der: ooi, cbor: Vec::new() }
 }
 /******************************************************************************************************/
@@ -515,12 +530,10 @@ fn cbor_name(b: &[u8]) -> Vec<u8> {
      for a total length of 7.
     *Otherwise it is encoded as a CBOR text string.
     */
-    let eui_64 = regex::Regex::new(r"^([A-F\d]{2}-){7}[A-F\d]{2}$").unwrap();
-    let is_hex = regex::Regex::new(r"^(?:[A-Fa-f0-9]{2})*$").unwrap();
     if vec.len() == 2 && vec[0] == [ATT_COMMON_NAME as u8] {
         //let cn = from_utf8(&vec[0][1..]).unwrap();
         vec.remove(0);
-        if eui_64.is_match(from_utf8(&vec[0][1..]).unwrap()) {
+        if EUI_64_REGEX.is_match(from_utf8(&vec[0][1..]).unwrap()) {
             vec[0].retain(|&x| x != b'-' && x != 0x77); // 0x77 = text string length 23
             if &vec[0][6..10] == b"FFFE" {
                 vec[0].drain(6..10);
@@ -528,7 +541,7 @@ fn cbor_name(b: &[u8]) -> Vec<u8> {
             vec[0].insert(0, '1' as u8);
             vec[0].insert(0, '0' as u8);
             vec[0] = lcbor_bytes(&hex::decode(&vec[0]).unwrap());
-        } else if is_hex.is_match(from_utf8(&vec[0][1..]).unwrap()) {
+        } else if IS_HEX_REGEX.is_match(from_utf8(&vec[0][1..]).unwrap()) {
             vec[0][0] = '0' as u8; //overwrite the added utf8 text marker at the start
             vec[0].insert(0, '0' as u8);
             vec[0] = lcbor_bytes(&hex::decode(&vec[0]).unwrap());
@@ -571,10 +584,18 @@ fn cbor_alg_id(b: &[u8]) -> Vec<u8> {
 // CBOR encodes a DER encoded ECDSA signature value
 fn cbor_ecdsa(b: &[u8]) -> Vec<u8> {
     let signature_seq = lder_vec(b, ASN1_SEQ);
-    let r = lder_uint(signature_seq[0]).to_vec();
-    let s = lder_uint(signature_seq[1]).to_vec();
+    let r = lder_uint(signature_seq[0]);
+    let s = lder_uint(signature_seq[1]);
     let max = std::cmp::max(r.len(), s.len());
-    lcbor_bytes(&[vec![0; max - r.len()], r, vec![0; max - s.len()], s].concat())
+    
+    // Pre-allocate result buffer for better performance
+    let mut result = Vec::with_capacity(max * 2);
+    result.extend(std::iter::repeat(0).take(max - r.len()));
+    result.extend_from_slice(r);
+    result.extend(std::iter::repeat(0).take(max - s.len()));
+    result.extend_from_slice(s);
+    
+    lcbor_bytes(&result)
 }
 fn cbor_opt_array(vec: &[Vec<u8>], t: u8) -> Vec<u8> {
     if vec.len() == 2 && vec[0] == [t] {
@@ -3921,35 +3942,45 @@ pub mod lder {
         (&b[value_only as usize * start..end], &b[end..])
     }
     pub fn lder_to_bit_str(bytes: Vec<u8>) -> Vec<u8> {
-        let mut result: Vec<u8> = bytes;
-        result.insert(0, 0x00); //TODO: do we care about the short strings here?
+        let mut result = Vec::with_capacity(bytes.len() + 4);
+        result.push(0x00);
+        result.extend(bytes);
         lder_to_generic(result, ASN1_BIT_STR)
     }
     pub fn lder_to_pos_int(bytes: Vec<u8>) -> Vec<u8> {
         //The bits of the first octet and bit 8 of the second octet must not all be ones.
         //The bits of the first octet and bit 8 of the second octet must not all be zero.
         //For positive numbers whose binary representation starts with a 1, a zero byte is added at the front to fulfill the sign constraint.
-        let mut result: Vec<u8> = bytes;
-
-        //trace!("Inserting 00: \n0 < 0b1000_0000 & *result.get(0).unwrap()\n{}\n*result.get(0).unwrap() as u8:\n{}", 0 < 0b1000_0000 & *result.get(0).unwrap(), *result.get(0).unwrap() as u8);
-        if (0 < 0b1000_0000 & *result.get(0).unwrap() as u8) && (127 < *result.get(0).unwrap() as u8) {
-            //TODO test more
-            result.insert(0, 0x00);
-        }
+        let result = if !bytes.is_empty() && (0 < 0b1000_0000 & bytes[0] as u8) && (127 < bytes[0] as u8) {
+            let mut r = Vec::with_capacity(bytes.len() + 1);
+            r.push(0x00);
+            r.extend(bytes);
+            r
+        } else {
+            bytes
+        };
         lder_to_generic(result, ASN1_INT)
     }
     pub fn lder_to_generic(bytes: Vec<u8>, asn1_type: u8) -> Vec<u8> {
         let len = bytes.len();
-        let mut result: Vec<u8> = bytes;
-        result.insert(0, len as u8);
-        if 127 < len && len <= 255 { //Note, different boundaries cmp with lder_to_gen_seq, since here the incoming items are already wrapped
-            result.insert(0, ASN1_ONE_BYTE_SIZE);
+        let header_size = if len <= 127 { 2 } else if len <= 255 { 3 } else { 4 };
+        let mut result = Vec::with_capacity(len + header_size);
+        
+        // Build header in reverse, then reverse it
+        if 127 < len && len <= 255 {
+            result.push(ASN1_ONE_BYTE_SIZE);
+            result.push(len as u8);
         } else if 255 < len {
-            result.insert(0, (len >> 8) as u8);
-            result.insert(0, ASN1_TWO_BYTE_SIZE);
+            result.push(ASN1_TWO_BYTE_SIZE);
+            result.push((len >> 8) as u8);
+            result.push(len as u8);
+        } else {
+            result.push(len as u8);
         }
-        result.insert(0, asn1_type);
-
+        result.push(asn1_type);
+        result.reverse();
+        result.extend(bytes);
+        
         result
     }
     /*
@@ -3969,23 +4000,32 @@ pub mod lder {
     }
     
     pub fn lder_to_gen_seq(elements: Vec<Vec<u8>>, asn1_type: u8) -> Vec<u8> {
-        let mut result: Vec<u8> = Vec::new();
+        let total_len: usize = elements.iter().map(|e| e.len()).sum();
+        let mut result: Vec<u8> = Vec::with_capacity(total_len + 4);
+        
         for item in elements.into_iter() {
             result.extend(item);
         }
+        
+        let len = result.len();
+        let header_size = if len <= 127 { 2 } else if len <= 256 { 3 } else { 4 };
+        let mut header = Vec::with_capacity(header_size);
 
-        result.insert(0, result.len() as u8); //
-
-        if 128 < result.len() && result.len() <= 256 { //corner cases!
-            //TODO/CHECK: we don't want the insertion for an original sum of 127, check extensions
-            result.insert(0, ASN1_ONE_BYTE_SIZE);
-        } else if 256 < result.len() { //256, since this is the resulting len _after_ the insertion above
-            result.insert(0, (result.len() - 1 >> 8) as u8);
-            result.insert(0, ASN1_TWO_BYTE_SIZE);
+        if 128 < len && len <= 256 {
+            header.push(ASN1_ONE_BYTE_SIZE);
+            header.push(len as u8);
+        } else if 256 < len {
+            header.push(ASN1_TWO_BYTE_SIZE);
+            header.push((len - 1 >> 8) as u8);
+            header.push(len as u8);
+        } else {
+            header.push(len as u8);
         }
-        result.insert(0, asn1_type);
-
-        result
+        header.push(asn1_type);
+        header.reverse();
+        header.extend(result);
+        
+        header
     }
     pub fn lder_to_two_seq(first: Vec<u8>, second: Vec<u8>) -> Vec<u8> {
         let mut result = Vec::new();
@@ -3995,26 +4035,37 @@ pub mod lder {
     }
 
     pub fn lder_to_time(input: String, time_type: u8) -> Vec<u8> {
-        let mut result: Vec<u8> = input.as_bytes().to_vec();
-        result.insert(0, (result.len()) as u8);
-        result.insert(0, time_type);
-
+        let bytes = input.as_bytes();
+        let len = bytes.len();
+        let mut result = Vec::with_capacity(len + 2);
+        result.push(time_type);
+        result.push(len as u8);
+        result.extend_from_slice(bytes);
         result
     }
 
     pub fn sct_add_len(bytes: Vec<u8>) -> Vec<u8> {
         let len = bytes.len();
-        let mut result: Vec<u8> = bytes;
-        result.insert(0, len as u8);
+        let first_byte = bytes.get(0).copied().unwrap_or(0);
+        let needs_zero_prefix = (0 < 0b1000_0000 & first_byte as u8) && (127 < first_byte as u8);
+        
+        let header_size = if len > 255 { 
+            if needs_zero_prefix { 3 } else { 2 }
+        } else {
+            if needs_zero_prefix { 2 } else { 1 }
+        };
+        
+        let mut result = Vec::with_capacity(bytes.len() + header_size);
+        
+        if needs_zero_prefix {
+            result.push(0x00);
+        }
         if 255 < len {
-            result.insert(0, (len >> 8) as u8);
+            result.push((len >> 8) as u8);
         }
-        //result.insert(0, 0x00); //todo test
-        if (0 < 0b1000_0000 & *result.get(0).unwrap() as u8) && (127 < *result.get(0).unwrap() as u8) {
-            //TODO test
-            result.insert(0, 0x00);
-        }
-
+        result.push(len as u8);
+        result.extend(bytes);
+        
         result
     }
 }
