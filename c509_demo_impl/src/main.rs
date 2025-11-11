@@ -322,27 +322,27 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
     } else {
         let oid = lder(lder_vec(signature_algorithm, ASN1_SEQ)[0], ASN1_OID);
         print_warning("No C509 int regisered for signature algorithm identifier, oid", &signature_algorithm, oid);
-        output.push(cbor_alg_id(signature_algorithm));
+        output.push(cbor_encode_algorithm_identifier(signature_algorithm));
     }
     
     // signature
     assert!(signature_algorithm == signature, "Expected signature_algorithm == signature!");
     // issuer
-    output.push(cbor_name(issuer));
+    output.push(cbor_encode_name(issuer));
     // validity
-    let c_not_before = cbor_time(not_before, 0);
-    let c_not_after = cbor_time(not_after, 0);
+    let c_not_before = cbor_encode_time(not_before, 0);
+    let c_not_after = cbor_encode_time(not_after, 0);
     
     if c_not_after < c_not_before {
       warn!("Pre-2000 time bug, trying to circumvent");
-      output.push(cbor_time(not_before, 1));
+      output.push(cbor_encode_time(not_before, 1));
       
     } else {
       output.push(c_not_before);
     }
     output.push(c_not_after);
     // subject
-    output.push(cbor_name(subject));
+    output.push(cbor_encode_name(subject));
     // subjectPublicKeyInfo
     assert!(subject_public_key[0] == 0, "expected 0 unused bits");
     let subject_public_key = &subject_public_key[1..];
@@ -392,7 +392,7 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
     } else {
         let oid = lder(lder_vec(spki_algorithm, ASN1_SEQ)[0], ASN1_OID);
         print_warning("No C509 int registered for public key algorithm identifier, oid", &spki_algorithm, oid);
-        output.push(cbor_alg_id(spki_algorithm));
+        output.push(cbor_encode_algorithm_identifier(spki_algorithm));
         output.push(lcbor_bytes(subject_public_key));
     }
     // issuerUniqueID, subjectUniqueID -- not supported
@@ -419,26 +419,26 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
             vec.push(match ext_type {
                 EXT_SUBJECT_KEY_ID => lcbor_bytes(lder(extn_value, ASN1_OCTET_STR)),
                 EXT_KEY_USAGE => cbor_ext_key_use(extn_value, crit_sign * extensions.len() as i64),
-                EXT_SUBJECT_ALT_NAME => cbor_general_names(extn_value, ASN1_SEQ, 2),
-                EXT_BASIC_CONSTRAINTS => cbor_ext_bas_con(extn_value),
-                EXT_CRL_DIST_POINTS => cbor_ext_crl_dist(extn_value),
-                EXT_CERT_POLICIES => cbor_ext_cert_policies(extn_value),
-                EXT_AUTH_KEY_ID => cbor_ext_auth_key_id(extn_value),
-                EXT_EXT_KEY_USAGE => cbor_ext_eku(extn_value),
-                EXT_AUTH_INFO => cbor_ext_info_access(extn_value),
+                EXT_SUBJECT_ALT_NAME => cbor_encode_general_names(extn_value, ASN1_SEQ, 2),
+                EXT_BASIC_CONSTRAINTS => cbor_encode_ext_basic_constraints(extn_value),
+                EXT_CRL_DIST_POINTS => cbor_encode_ext_crl_distribution_points(extn_value),
+                EXT_CERT_POLICIES => cbor_encode_ext_certificate_policies(extn_value),
+                EXT_AUTH_KEY_ID => cbor_encode_ext_authority_key_identifier(extn_value),
+                EXT_EXT_KEY_USAGE => cbor_encode_ext_extended_key_usage(extn_value),
+                EXT_AUTH_INFO => cbor_encode_ext_info_access(extn_value),
                 EXT_SCT_LIST => cbor_ext_sct(extn_value, not_before),
-                EXT_SUBJECT_DIRECTORY_ATTR => cbor_store_only(extn_value, extension[0], oid), //cbor_ext_directory_attr(extn_value),
-                EXT_ISSUER_ALT_NAME => cbor_general_names(extn_value, ASN1_SEQ, 2),           //Note: "Issuer Alternative Name (issuerAltName). extensionValue is encoded exactly like subjectAltName."
-                EXT_NAME_CONSTRAINTS => cbor_store_only(extn_value, extension[0], oid),       //cbor_ext_name_constraints(extn_value),  //Sample certificates welcome
-                EXT_POLICY_MAPPINGS => cbor_store_only(extn_value, extension[0], oid),        //cbor_ext_policy_mappings(extn_value),   //Sample certificates welcome
-                EXT_POLICY_CONSTRAINTS => cbor_store_only(extn_value, extension[0], oid),     //cbor_ext_policy_constraints(extn_value),  //Sample certificates welcome
-                EXT_FRESHEST_CRL => cbor_ext_crl_dist(extn_value),                            //Note: "Freshest CRL (freshestCRL). extensionValue is encoded exactly like cRLDistributionPoints"
-                EXT_INHIBIT_ANYPOLICY => cbor_store_only(extn_value, extension[0], oid),      //cbor_ext_inhibit_anypolicy(extn_value),   //Sample certificates welcome
-                EXT_SUBJECT_INFO_ACCESS => cbor_ext_info_access(extn_value),
-                EXT_IP_RESOURCES => cbor_ext_ip_res(extn_value),
-                EXT_AS_RESOURCES => cbor_ext_as_res(extn_value),
-                EXT_IP_RESOURCES_V2 => cbor_ext_ip_res(extn_value),
-                EXT_AS_RESOURCES_V2 => cbor_ext_as_res(extn_value),
+                EXT_SUBJECT_DIRECTORY_ATTR => cbor_store_extension_raw(extn_value, extension[0], oid), //cbor_ext_directory_attr(extn_value),
+                EXT_ISSUER_ALT_NAME => cbor_encode_general_names(extn_value, ASN1_SEQ, 2),           //Note: "Issuer Alternative Name (issuerAltName). extensionValue is encoded exactly like subjectAltName."
+                EXT_NAME_CONSTRAINTS => cbor_store_extension_raw(extn_value, extension[0], oid),       //cbor_ext_name_constraints(extn_value),  //Sample certificates welcome
+                EXT_POLICY_MAPPINGS => cbor_store_extension_raw(extn_value, extension[0], oid),        //cbor_ext_policy_mappings(extn_value),   //Sample certificates welcome
+                EXT_POLICY_CONSTRAINTS => cbor_store_extension_raw(extn_value, extension[0], oid),     //cbor_ext_policy_constraints(extn_value),  //Sample certificates welcome
+                EXT_FRESHEST_CRL => cbor_encode_ext_crl_distribution_points(extn_value),                            //Note: "Freshest CRL (freshestCRL). extensionValue is encoded exactly like cRLDistributionPoints"
+                EXT_INHIBIT_ANYPOLICY => cbor_store_extension_raw(extn_value, extension[0], oid),      //cbor_ext_inhibit_anypolicy(extn_value),   //Sample certificates welcome
+                EXT_SUBJECT_INFO_ACCESS => cbor_encode_ext_info_access(extn_value),
+                EXT_IP_RESOURCES => cbor_encode_ext_ip_resources(extn_value),
+                EXT_AS_RESOURCES => cbor_encode_autonomous_system_resources(extn_value),
+                EXT_IP_RESOURCES_V2 => cbor_encode_ext_ip_resources(extn_value),
+                EXT_AS_RESOURCES_V2 => cbor_encode_autonomous_system_resources(extn_value),
                 EXT_BIOMETRIC_INFO => lcbor_bytes(extn_value),            //Store only
                 EXT_PRECERT_SIGNING_CERT => lcbor_bytes(extn_value),      //Store only
                 EXT_OCSP_NO_CHECK => lcbor_bytes(extn_value),             //Store only
@@ -460,14 +460,14 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
     Optimisation: if only a keyUsage field is present, skip the array for extensions.
     This requires the minus sign of the EXT_KEY_USAGE value (2) to be surpressed above
     */
-    output.push(cbor_opt_array(&vec, EXT_KEY_USAGE as u8));
+    output.push(cbor_optimize_array(&vec, EXT_KEY_USAGE as u8));
     // now only signatureValue
     assert!(signature_value[0] == 0, "expected 0 unused bits");
     let signature_value = &signature_value[1..];
     if let Some(sig_type) = sig_map(signature_algorithm) {
         // Special handling for ECDSA
         if [SIG_ECDSA_SHA1, SIG_ECDSA_SHA256, SIG_ECDSA_SHA384, SIG_ECDSA_SHA512, SIG_ECDSA_SHAKE128, SIG_ECDSA_SHAKE256].contains(&sig_type) {
-            output.push(cbor_ecdsa(signature_value));
+            output.push(cbor_encode_ecdsa_signature(signature_value));
         } else {
             output.push(lcbor_bytes(signature_value));
         }
@@ -478,8 +478,8 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
 }
 /******************************************************************************************************/
 // CBOR encode a DER encoded Name field
-fn cbor_name(b: &[u8]) -> Vec<u8> {
-    let name = lder_vec(b, ASN1_SEQ);
+fn cbor_encode_name(der_bytes: &[u8]) -> Vec<u8> {
+    let name = lder_vec(der_bytes, ASN1_SEQ);
     let mut vec = Vec::new();
     for rdn in &name {
         let attributes = lder_vec_len(rdn, ASN1_SET, 1);
@@ -538,13 +538,13 @@ fn cbor_name(b: &[u8]) -> Vec<u8> {
     lcbor_array(&vec)
 }
 /******************************************************************************************************/
-// CBOR encode a DER encoded Time field (ruturns ~biguint)
-fn cbor_time(b: &[u8], pre_y2k_flag: u8) -> Vec<u8> {
+// CBOR encode a DER encoded Time field (returns ~biguint)
+fn cbor_encode_time(der_bytes: &[u8], pre_y2k_flag: u8) -> Vec<u8> {
   
     let time_string = if pre_y2k_flag == 1 {
-        if b[0] == ASN1_UTC_TIME as u8 { [b"19", lder(b, ASN1_UTC_TIME)].concat() } else { lder(b, ASN1_GEN_TIME).to_vec() }
+        if der_bytes[0] == ASN1_UTC_TIME as u8 { [b"19", lder(der_bytes, ASN1_UTC_TIME)].concat() } else { lder(der_bytes, ASN1_GEN_TIME).to_vec() }
     } else { //the normal case 
-        if b[0] == ASN1_UTC_TIME as u8 { [b"20", lder(b, ASN1_UTC_TIME)].concat() } else { lder(b, ASN1_GEN_TIME).to_vec() }
+        if der_bytes[0] == ASN1_UTC_TIME as u8 { [b"20", lder(der_bytes, ASN1_UTC_TIME)].concat() } else { lder(der_bytes, ASN1_GEN_TIME).to_vec() }
     };
     
     let time_string = from_utf8(&time_string).unwrap();
@@ -557,30 +557,30 @@ fn cbor_time(b: &[u8], pre_y2k_flag: u8) -> Vec<u8> {
     }
 }
 // CBOR encode a DER encoded Algorithm Identifier
-fn cbor_alg_id(b: &[u8]) -> Vec<u8> {
-    let ai = lder_vec(b, ASN1_SEQ);
-    assert!(ai.len() < 3, "Expected length 1 or 2");
-    let oid = lcbor_bytes(lder(ai[0], ASN1_OID));
-    if ai.len() == 1 {
+fn cbor_encode_algorithm_identifier(der_bytes: &[u8]) -> Vec<u8> {
+    let algorithm_identifier = lder_vec(der_bytes, ASN1_SEQ);
+    assert!(algorithm_identifier.len() < 3, "Expected length 1 or 2");
+    let oid = lcbor_bytes(lder(algorithm_identifier[0], ASN1_OID));
+    if algorithm_identifier.len() == 1 {
         oid
     } else {
-        let par = lcbor_bytes(ai[1]);
-        lcbor_array(&[oid, par])
+        let parameters = lcbor_bytes(algorithm_identifier[1]);
+        lcbor_array(&[oid, parameters])
     }
 }
 // CBOR encodes a DER encoded ECDSA signature value
-fn cbor_ecdsa(b: &[u8]) -> Vec<u8> {
-    let signature_seq = lder_vec(b, ASN1_SEQ);
-    let r = lder_uint(signature_seq[0]).to_vec();
-    let s = lder_uint(signature_seq[1]).to_vec();
-    let max = std::cmp::max(r.len(), s.len());
-    lcbor_bytes(&[vec![0; max - r.len()], r, vec![0; max - s.len()], s].concat())
+fn cbor_encode_ecdsa_signature(der_bytes: &[u8]) -> Vec<u8> {
+    let signature_seq = lder_vec(der_bytes, ASN1_SEQ);
+    let r_value = lder_uint(signature_seq[0]).to_vec();
+    let s_value = lder_uint(signature_seq[1]).to_vec();
+    let max_length = std::cmp::max(r_value.len(), s_value.len());
+    lcbor_bytes(&[vec![0; max_length - r_value.len()], r_value, vec![0; max_length - s_value.len()], s_value].concat())
 }
-fn cbor_opt_array(vec: &[Vec<u8>], t: u8) -> Vec<u8> {
-    if vec.len() == 2 && vec[0] == [t] {
-        vec[1].clone()
+fn cbor_optimize_array(vector: &[Vec<u8>], type_marker: u8) -> Vec<u8> {
+    if vector.len() == 2 && vector[0] == [type_marker] {
+        vector[1].clone()
     } else {
-        lcbor_array(&vec)
+        lcbor_array(&vector)
     }
 }
 /******************************************************************************************************/
@@ -590,9 +590,9 @@ Below is a list of encoding functions for the supported extensions listed in C50
 /*
   Placeholder function to store the raw extension value as bytes
 */
-fn cbor_store_only(b: &[u8], v: &[u8], oid: &[u8]) -> Vec<u8> {
-    print_warning("Warning, currently storing raw data for extension with oid", v, oid);
-    lcbor_bytes(b)
+fn cbor_store_extension_raw(extension_value: &[u8], extension_der: &[u8], oid: &[u8]) -> Vec<u8> {
+    print_warning("Warning, currently storing raw data for extension with oid", extension_der, oid);
+    lcbor_bytes(extension_value)
 }
 /*
 CBOR encode GeneralNames
@@ -601,9 +601,9 @@ EXT_SUBJECT_ALT_NAME
 Authority Key Identifier extension
 Note: no wrapping array if content is a single name of type opt
 */
-fn cbor_general_names(b: &[u8], t: u8, opt: u8) -> Vec<u8> {
+fn cbor_encode_general_names(der_bytes: &[u8], asn1_tag: u8, opt: u8) -> Vec<u8> {
     let unwrap = opt;
-    let names = lder_vec(b, t);
+    let names = lder_vec(der_bytes, asn1_tag);
     let mut vec = Vec::new();
     for name in names {
         //println!("handling name: {:02x?}", name);
@@ -621,20 +621,20 @@ fn cbor_general_names(b: &[u8], t: u8, opt: u8) -> Vec<u8> {
                     }
                     0x09 => {
                         vec.push(lcbor_int(-2));
-                        vec.push(cbor_other_name_mail(inner_value));
+                        vec.push(cbor_encode_other_name_smtp_mailbox(inner_value));
                     }
                     0x04 => {
                         vec.push(lcbor_int(-1));
-                        vec.push(cbor_other_name_hw(inner_value));
+                        vec.push(cbor_encode_other_name_hardware_module(inner_value));
                     }
                     _ => {
                         vec.push(lcbor_int(0));
-                        vec.push(cbor_other_name(value))
+                        vec.push(cbor_encode_other_name(value))
                     } //resort to generic otherName encoding, [ ~oid, bytes ]
                 },
                 _ => {
                     vec.push(lcbor_int(0));
-                    vec.push(cbor_other_name(value))
+                    vec.push(cbor_encode_other_name(value))
                 } //same as above
             }
         } else {
@@ -642,7 +642,7 @@ fn cbor_general_names(b: &[u8], t: u8, opt: u8) -> Vec<u8> {
             vec.push(match context_tag {
                 1 => lcbor_text(value),  // rfc822Name
                 2 => lcbor_text(value),  // dNSName
-                4 => cbor_name(value),   // Name (TODO a4?)
+                4 => cbor_encode_name(value),   // Name (TODO a4?)
                 6 => lcbor_text(value),  // uniformResourceIdentifier
                 7 => lcbor_bytes(value), // iPAddress
                 8 => lcbor_bytes(value), // registeredID : should be stored as ~oid
@@ -650,7 +650,7 @@ fn cbor_general_names(b: &[u8], t: u8, opt: u8) -> Vec<u8> {
             })
         }
     }
-    cbor_opt_array(&vec, unwrap)
+    cbor_optimize_array(&vec, unwrap)
 }
 /******************************************************************************************************/
 /*
@@ -664,16 +664,16 @@ ASN.1 input description
 CDDL
 [ ~oid, bytes ]
 */
-fn cbor_other_name(b: &[u8]) -> Vec<u8> {
-    let mut vec = Vec::new();
-    let (oid_raw, rest) = lder_split(b, false);
+fn cbor_encode_other_name(der_bytes: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    let (oid_raw, rest) = lder_split(der_bytes, false);
     let oid = lder(oid_raw, ASN1_OID);
     let raw_value = lder(rest, ASN1_INDEX_ZERO);
     //let (choice, value_raw) = der_split(rest, false);
     //Since the raw value can be of any type, we just store it as a byte string without parsing
-    vec.push(lcbor_bytes(oid));
-    vec.push(lcbor_bytes(raw_value));
-    lcbor_array(&vec)
+    result.push(lcbor_bytes(oid));
+    result.push(lcbor_bytes(raw_value));
+    lcbor_array(&result)
 }
 /******************************************************************************************************/
 /*
@@ -754,10 +754,10 @@ The text decoding is:
    :   }
 *WARNING* the OID in this example does not match the OID found in OID databases
 */
-fn cbor_other_name_mail(b: &[u8]) -> Vec<u8> {
+fn cbor_encode_other_name_smtp_mailbox(der_bytes: &[u8]) -> Vec<u8> {
     // let mut vec = Vec::new();
     let value;
-    value = lder(b, ASN1_UTF8_STR);
+    value = lder(der_bytes, ASN1_UTF8_STR);
     lcbor_text(value)
     //cbor_array(&vec)
 }
@@ -775,14 +775,14 @@ HardwareModuleName ::= SEQUENCE {
 hwType OBJECT IDENTIFIER,
 hwSerialNum OCTET STRING }
 */
-fn cbor_other_name_hw(b: &[u8]) -> Vec<u8> {
-    let mut vec = Vec::new();
-    let another_name_vec = lder_vec(b, ASN1_SEQ);
+fn cbor_encode_other_name_hardware_module(der_bytes: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    let another_name_vec = lder_vec(der_bytes, ASN1_SEQ);
     let type_id = lder(another_name_vec[0], ASN1_OID);
     let value = lder(another_name_vec[1], ASN1_OCTET_STR);
-    vec.push(lcbor_bytes(type_id));
-    vec.push(lcbor_bytes(value));
-    lcbor_array(&vec)
+    result.push(lcbor_bytes(type_id));
+    result.push(lcbor_bytes(value));
+    lcbor_array(&result)
 }
 /******************************************************************************************************/
 /*
@@ -817,10 +817,10 @@ If rdi is not present, the extension value can be CBOR encoded.
 Each ASId is encoded as an uint. With the exception of the first
 ASId, the ASid is encoded as the difference to the previous ASid.
 */
-fn cbor_ext_as_res(b: &[u8]) -> Vec<u8> {
-    let as_identifiers = lder(b, ASN1_SEQ);
+fn cbor_encode_autonomous_system_resources(der_bytes: &[u8]) -> Vec<u8> {
+    let as_identifiers = lder(der_bytes, ASN1_SEQ);
     let asnum = lder(as_identifiers, ASN1_INDEX_ZERO);
-    let mut vec = Vec::new();
+    let mut result = Vec::new();
     let mut last = 0u64;
     if asnum == [0x05, 0x00] {
         return lcbor_simple(CBOR_NULL);
@@ -828,7 +828,7 @@ fn cbor_ext_as_res(b: &[u8]) -> Vec<u8> {
     for elem in lder_vec(asnum, ASN1_SEQ) {
         if elem[0] == ASN1_INT {
             let asid = be_bytes_to_u64(lder_uint(elem));
-            vec.push(lcbor_uint(asid - last));
+            result.push(lcbor_uint(asid - last));
             last = asid;
         } else if elem[0] == ASN1_SEQ {
             let mut range = Vec::new();
@@ -837,12 +837,12 @@ fn cbor_ext_as_res(b: &[u8]) -> Vec<u8> {
                 range.push(lcbor_uint(asid - last));
                 last = asid;
             }
-            vec.push(lcbor_array(&range));
+            result.push(lcbor_array(&range));
         } else {
             panic!("Expected INT or SEQ");
         }
     }
-    lcbor_array(&vec)
+    lcbor_array(&result)
 }
 /******************************************************************************************************/
 /*
@@ -860,12 +860,12 @@ KeyIdentifierArray = [
 ]
 AuthorityKeyIdentifier = KeyIdentifierArray / KeyIdentifier
 */
-fn cbor_ext_auth_key_id(b: &[u8]) -> Vec<u8> {
-    let aki = lder_vec(b, ASN1_SEQ);
-    let ki = lcbor_bytes(lder(aki[0], 0x80));
-    match aki.len() {
-        1 => ki,
-        3 => lcbor_array(&[ki, cbor_general_names(aki[1], 0xa1, 0xff), lcbor_bytes(lder(aki[2], 0x82))]),
+fn cbor_encode_ext_authority_key_identifier(der_bytes: &[u8]) -> Vec<u8> {
+    let authority_key_id = lder_vec(der_bytes, ASN1_SEQ);
+    let key_identifier = lcbor_bytes(lder(authority_key_id[0], 0x80));
+    match authority_key_id.len() {
+        1 => key_identifier,
+        3 => lcbor_array(&[key_identifier, cbor_encode_general_names(authority_key_id[1], 0xa1, 0xff), lcbor_bytes(lder(authority_key_id[2], 0x82))]),
         _ => panic!("Error parsing auth key id"),
     }
 }
@@ -879,18 +879,18 @@ is present then extensionValue = pathLenConstraint.
 CDDL
  BasicConstraints = int
 */
-fn cbor_ext_bas_con(b: &[u8]) -> Vec<u8> {
-    let bc = lder_vec(b, ASN1_SEQ);
+fn cbor_encode_ext_basic_constraints(der_bytes: &[u8]) -> Vec<u8> {
+    let basic_constraints = lder_vec(der_bytes, ASN1_SEQ);
     //println!("match bc.len(): {}", bc.len());
-    match bc.len() {
+    match basic_constraints.len() {
         0 => lcbor_int(-2),
         1 => {
-            assert!(lder(bc[0], ASN1_BOOL) == [0xff], "Expected cA == true");
+            assert!(lder(basic_constraints[0], ASN1_BOOL) == [0xff], "Expected cA == true");
             lcbor_int(-1)
         }
         2 => {
-            assert!(lder(bc[0], ASN1_BOOL) == [0xff], "Expected cA == true");
-            let path_len = lder_uint(bc[1]);
+            assert!(lder(basic_constraints[0], ASN1_BOOL) == [0xff], "Expected cA == true");
+            let path_len = lder_uint(basic_constraints[1]);
             assert!(path_len.len() == 1, "Expected path length < 256");
             lcbor_uint(path_len[0] as u64)
         }
@@ -929,44 +929,44 @@ If noticeRef is not used and any explicitText are encoded as UTF8String, the ext
 OIDs registered in C509 are encoded as an int. The policyQualifierId is encoded as an CBOR int or an unwrapped
 CBOR OID tag (RFC9090).
 */
-fn cbor_ext_cert_policies(b: &[u8]) -> Vec<u8> {
-    let mut vec = Vec::new();
-    for pi in lder_vec(b, ASN1_SEQ) {
-        let pi = lder_vec(pi, ASN1_SEQ);
-        assert!(pi.len() == 1 || pi.len() == 2, "expected length 1 or 2");
-        let oid = lder(pi[0], ASN1_OID);
-        if let Some(cp_type) = cp_map(oid) {
-            vec.push(lcbor_int(cp_type));
+fn cbor_encode_ext_certificate_policies(der_bytes: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    for policy_info in lder_vec(der_bytes, ASN1_SEQ) {
+        let policy_info = lder_vec(policy_info, ASN1_SEQ);
+        assert!(policy_info.len() == 1 || policy_info.len() == 2, "expected length 1 or 2");
+        let oid = lder(policy_info[0], ASN1_OID);
+        if let Some(cert_policy_type) = cp_map(oid) {
+            result.push(lcbor_int(cert_policy_type));
         } else {
-            print_warning("No C509 int registered for Certificate Policy OID", pi[0], oid);
-            vec.push(lcbor_bytes(oid));
+            print_warning("No C509 int registered for Certificate Policy OID", policy_info[0], oid);
+            result.push(lcbor_bytes(oid));
         }
-        if pi.len() == 2 {
-            let mut vec2 = Vec::new();
-            for pqi in lder_vec(pi[1], ASN1_SEQ) {
-                let pqi = lder_vec_len(pqi, ASN1_SEQ, 2);
-                let oid = lder(pqi[0], ASN1_OID);
-                if let Some(pq_type) = pq_map(oid) {
-                    vec2.push(lcbor_int(pq_type));
-                    if pq_type == PQ_CPS {
-                        let text = lder(pqi[1], ASN1_IA5_SRT);
-                        trace!("cbor_ext_cert_policies, encoded text {:02x?}", text);
-                        vec2.push(lcbor_text(text));
-                    } else if pq_type == PQ_UNOTICE {
-                        let text = lder(lder(pqi[1], ASN1_SEQ), ASN1_UTF8_STR);
-                        vec2.push(lcbor_text(text));
+        if policy_info.len() == 2 {
+            let mut qualifiers = Vec::new();
+            for policy_qualifier_info in lder_vec(policy_info[1], ASN1_SEQ) {
+                let policy_qualifier_info = lder_vec_len(policy_qualifier_info, ASN1_SEQ, 2);
+                let oid = lder(policy_qualifier_info[0], ASN1_OID);
+                if let Some(policy_qualifier_type) = pq_map(oid) {
+                    qualifiers.push(lcbor_int(policy_qualifier_type));
+                    if policy_qualifier_type == PQ_CPS {
+                        let text = lder(policy_qualifier_info[1], ASN1_IA5_SRT);
+                        trace!("cbor_encode_ext_certificate_policies, encoded text {:02x?}", text);
+                        qualifiers.push(lcbor_text(text));
+                    } else if policy_qualifier_type == PQ_UNOTICE {
+                        let text = lder(lder(policy_qualifier_info[1], ASN1_SEQ), ASN1_UTF8_STR);
+                        qualifiers.push(lcbor_text(text));
                     } else {
                         panic!("unexpected qualifier oid");
                     }
                 } else {
-                    print_warning("No C509 int registered for Policy Qualifier OID", pqi[0], oid);
-                    vec2.push(lcbor_bytes(oid));
+                    print_warning("No C509 int registered for Policy Qualifier OID", policy_qualifier_info[0], oid);
+                    qualifiers.push(lcbor_bytes(oid));
                 }
             }
-            vec.push(lcbor_array(&vec2));
+            result.push(lcbor_array(&qualifiers));
         }
     }
-    lcbor_array(&vec)
+    lcbor_array(&result)
 }
 /******************************************************************************************************/
 /**
@@ -979,114 +979,114 @@ CRL Distribution Points (cRLDistributionPoints). If the CRL Distribution Points 
 DistributionPointName, where each DistributionPointName only contains uniformResourceIdentifiers,
 the extension value can be CBOR encoded. extensionValue is encoded as follows:
 */
-fn cbor_ext_crl_dist(b: &[u8]) -> Vec<u8> {
-    let mut vec = Vec::new();
-    for dists in lder_vec(b, ASN1_SEQ) {
-        let dists = lder(dists, ASN1_SEQ);
-        let dists = lder(dists, 0xa0);
-        let mut vec2 = Vec::new();
-        for dist in lder_vec(dists, 0xa0) {
-            vec2.push(lcbor_text(lder(dist, 0x86)));
+fn cbor_encode_ext_crl_distribution_points(der_bytes: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    for distribution_point in lder_vec(der_bytes, ASN1_SEQ) {
+        let distribution_point = lder(distribution_point, ASN1_SEQ);
+        let distribution_point = lder(distribution_point, 0xa0);
+        let mut uri_list = Vec::new();
+        for uri in lder_vec(distribution_point, 0xa0) {
+            uri_list.push(lcbor_text(lder(uri, 0x86)));
         }
-        if vec2.len() > 1 {
-            vec.push(lcbor_array(&vec2))
+        if uri_list.len() > 1 {
+            result.push(lcbor_array(&uri_list))
         } else {
-            vec.push(vec2[0].clone())
+            result.push(uri_list[0].clone())
         }
     }
-    lcbor_array(&vec)
+    lcbor_array(&result)
 }
 /******************************************************************************************************/
 // CBOR encodes a extended key usage extension
-fn cbor_ext_eku(b: &[u8]) -> Vec<u8> {
-    let mut vec = Vec::new();
-    for eku in lder_vec(b, ASN1_SEQ) {
-        let oid = lder(eku, ASN1_OID);
-        if let Some(eku_type) = eku_map(oid) {
-            vec.push(lcbor_uint(eku_type));
+fn cbor_encode_ext_extended_key_usage(der_bytes: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    for extended_key_usage in lder_vec(der_bytes, ASN1_SEQ) {
+        let oid = lder(extended_key_usage, ASN1_OID);
+        if let Some(extended_key_usage_type) = eku_map(oid) {
+            result.push(lcbor_uint(extended_key_usage_type));
         } else {
-            print_warning("No C509 int registered for EKU OID", eku, oid);
-            vec.push(lcbor_bytes(oid));
+            print_warning("No C509 int registered for EKU OID", extended_key_usage, oid);
+            result.push(lcbor_bytes(oid));
         }
     }
-    lcbor_array(&vec)
+    lcbor_array(&result)
 }
 /******************************************************************************************************/
 // CBOR encodes a authority/subject Info Access extension
-fn cbor_ext_info_access(b: &[u8]) -> Vec<u8> {
-    let mut vec = Vec::new();
-    for access_desc in lder_vec(b, ASN1_SEQ) {
-        let access_desc = lder_vec_len(access_desc, ASN1_SEQ, 2);
-        let oid = lder(access_desc[0], ASN1_OID);
-        let access_location = lcbor_text(lder(access_desc[1], 0x86));
-        if let Some(access_type) = info_map(oid) {
-            vec.push(lcbor_int(access_type));
+fn cbor_encode_ext_info_access(der_bytes: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    for access_description in lder_vec(der_bytes, ASN1_SEQ) {
+        let access_description = lder_vec_len(access_description, ASN1_SEQ, 2);
+        let oid = lder(access_description[0], ASN1_OID);
+        let access_location = lcbor_text(lder(access_description[1], 0x86));
+        if let Some(access_method_type) = info_map(oid) {
+            result.push(lcbor_int(access_method_type));
         } else {
-            print_warning("No C509 int registered for Info Access OID", access_desc[0], oid);
-            vec.push(lcbor_bytes(oid));
+            print_warning("No C509 int registered for Info Access OID", access_description[0], oid);
+            result.push(lcbor_bytes(oid));
         }
-        vec.push(access_location);
+        result.push(access_location);
     }
-    lcbor_array(&vec)
+    lcbor_array(&result)
 }
 /******************************************************************************************************/
 /******************************************************************************************************/
 // CBOR encodes a Range of IP Addresses
-fn cbor_ext_ip_res(b: &[u8]) -> Vec<u8> {
-    let mut vec = Vec::new();
-    let mut last = Vec::new();
-    for block in lder_vec(b, ASN1_SEQ) {
-        let family = lder_vec_len(block, ASN1_SEQ, 2);
-        let afi = lder(family[0], ASN1_OCTET_STR);
-        assert!(afi.len() == 2, "expected afi and no safi");
-        vec.push(lcbor_uint(be_bytes_to_u64(afi)));
+fn cbor_encode_ext_ip_resources(der_bytes: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut last_ip = Vec::new();
+    for ip_block in lder_vec(der_bytes, ASN1_SEQ) {
+        let address_family = lder_vec_len(ip_block, ASN1_SEQ, 2);
+        let address_family_identifier = lder(address_family[0], ASN1_OCTET_STR);
+        assert!(address_family_identifier.len() == 2, "expected afi and no safi");
+        result.push(lcbor_uint(be_bytes_to_u64(address_family_identifier)));
         // NULL
-        let mut fam = Vec::new();
-        for aor in lder_vec(family[1], ASN1_SEQ) {
-            if aor[0] == ASN1_BIT_STR {
-                let ip = lder(aor, ASN1_BIT_STR);
-                let unused_bits = ip[0];
-                let ip_bytes = &ip[1..];
-                if ip_bytes.len() == last.len() {
-                    let diff = be_bytes_to_u64(ip_bytes) as i64 - be_bytes_to_u64(&last) as i64;
-                    fam.push(lcbor_int(diff));
+        let mut family_addresses = Vec::new();
+        for address_or_range in lder_vec(address_family[1], ASN1_SEQ) {
+            if address_or_range[0] == ASN1_BIT_STR {
+                let ip_address = lder(address_or_range, ASN1_BIT_STR);
+                let unused_bits = ip_address[0];
+                let ip_bytes = &ip_address[1..];
+                if ip_bytes.len() == last_ip.len() {
+                    let diff = be_bytes_to_u64(ip_bytes) as i64 - be_bytes_to_u64(&last_ip) as i64;
+                    family_addresses.push(lcbor_int(diff));
                 } else {
-                    fam.push(lcbor_bytes(&ip_bytes));
+                    family_addresses.push(lcbor_bytes(&ip_bytes));
                 }
-                last = ip_bytes.to_vec();
-                fam.push(lcbor_uint(unused_bits as u64));
-            } else if aor[0] == ASN1_SEQ {
-                let mut range = Vec::new();
-                let range_der = lder_vec_len(aor, ASN1_SEQ, 2);
-                let ip = lder(range_der[0], ASN1_BIT_STR);
-                let ip_bytes = &ip[1..];
-                if ip_bytes.len() == last.len() {
-                    let diff = be_bytes_to_u64(ip_bytes) as i64 - be_bytes_to_u64(&last) as i64;
-                    range.push(lcbor_int(diff));
+                last_ip = ip_bytes.to_vec();
+                family_addresses.push(lcbor_uint(unused_bits as u64));
+            } else if address_or_range[0] == ASN1_SEQ {
+                let mut ip_range = Vec::new();
+                let range_der = lder_vec_len(address_or_range, ASN1_SEQ, 2);
+                let min_ip = lder(range_der[0], ASN1_BIT_STR);
+                let min_ip_bytes = &min_ip[1..];
+                if min_ip_bytes.len() == last_ip.len() {
+                    let diff = be_bytes_to_u64(min_ip_bytes) as i64 - be_bytes_to_u64(&last_ip) as i64;
+                    ip_range.push(lcbor_int(diff));
                 } else {
-                    range.push(lcbor_bytes(&ip_bytes));
+                    ip_range.push(lcbor_bytes(&min_ip_bytes));
                 }
-                last = ip_bytes.to_vec();
-                let ip = lder(range_der[1], ASN1_BIT_STR);
-                let unused_bits = ip[0];
-                let mut ip_bytes = ip[1..].to_vec();
-                let l = ip_bytes.len();
-                ip_bytes[l - 1] |= (2u16.pow(unused_bits as u32) - 1) as u8;
-                if ip_bytes.len() == last.len() {
-                    let diff = be_bytes_to_u64(&ip_bytes) as i64 - be_bytes_to_u64(&last) as i64;
-                    range.push(lcbor_int(diff));
+                last_ip = min_ip_bytes.to_vec();
+                let max_ip = lder(range_der[1], ASN1_BIT_STR);
+                let unused_bits = max_ip[0];
+                let mut max_ip_bytes = max_ip[1..].to_vec();
+                let bytes_len = max_ip_bytes.len();
+                max_ip_bytes[bytes_len - 1] |= (2u16.pow(unused_bits as u32) - 1) as u8;
+                if max_ip_bytes.len() == last_ip.len() {
+                    let diff = be_bytes_to_u64(&max_ip_bytes) as i64 - be_bytes_to_u64(&last_ip) as i64;
+                    ip_range.push(lcbor_int(diff));
                 } else {
-                    range.push(lcbor_bytes(&ip_bytes));
+                    ip_range.push(lcbor_bytes(&max_ip_bytes));
                 }
-                last = ip_bytes.to_vec();
-                fam.push(lcbor_array(&range));
+                last_ip = max_ip_bytes.to_vec();
+                family_addresses.push(lcbor_array(&ip_range));
             } else {
                 panic!("Expected INT or SEQ");
             }
         }
-        vec.push(lcbor_array(&fam));
+        result.push(lcbor_array(&family_addresses));
     }
-    lcbor_array(&vec)
+    lcbor_array(&result)
 }
 /******************************************************************************************************/
 /*
@@ -1132,7 +1132,7 @@ fn cbor_ext_sct(b: &[u8], not_before: &[u8]) -> Vec<u8> {
         assert!(sct[0] == 0, "expected SCT version 1");
         vec.push(lcbor_bytes(&sct[1..33]));
         let ts = be_bytes_to_u64(&sct[33..41]) as i64;
-        let not_before_ms = 1000 * be_bytes_to_u64(&cbor_time(not_before, 0)[1..]) as i64;
+        let not_before_ms = 1000 * be_bytes_to_u64(&cbor_encode_time(not_before, 0)[1..]) as i64;
         vec.push(lcbor_int(ts - not_before_ms));
         assert!(sct[41..43] == [0, 0], "expected no SCT extentsions");
         assert!(sct[43..45] == [4, 3], "expected SCT SHA-256 ECDSA");
