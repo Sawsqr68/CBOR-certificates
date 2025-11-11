@@ -189,12 +189,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46c5e41b57b8bba42a04676d81cb89e9ee8e859a1a66f80a5a72e1cb76b34d43"
 
 [[package]]
-name = "byteorder"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fc10e8cc6b2580fda3f36eb6dc5316657f812a3df879a44a66fc9f0fdbc4855"
-
-[[package]]
 name = "c509"
 version = "0.4.1"
 dependencies = [
@@ -202,11 +196,11 @@ dependencies = [
  "asn1-rs",
  "bit_reverse",
  "brotli",
- "cbor",
  "chrono",
  "colored",
  "env_logger",
  "hex",
+ "lazy_static",
  "log",
  "num-bigint",
  "num-traits",
@@ -217,16 +211,6 @@ dependencies = [
  "serde_cbor",
  "webpki",
  "webpki-roots",
-]
-
-[[package]]
-name = "cbor"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e56053652b4b5c0ded5ae6183c7cd547ad2dd6bcce149658bef052a4995533bd"
-dependencies = [
- "byteorder",
- "rustc-serialize",
 ]
 
 [[package]]
@@ -558,12 +542,6 @@ dependencies = [
  "web-sys",
  "winapi",
 ]
-
-[[package]]
-name = "rustc-serialize"
-version = "0.3.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe834bc780604f4674073badbad26d7219cadfb4a2275802db12cbae17498401"
 
 [[package]]
 name = "rusticata-macros"
