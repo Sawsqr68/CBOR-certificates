@@ -418,7 +418,7 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
             }
             vec.push(match ext_type {
                 EXT_SUBJECT_KEY_ID => lcbor_bytes(lder(extn_value, ASN1_OCTET_STR)),
-                EXT_KEY_USAGE => cbor_ext_key_use(extn_value, crit_sign * extensions.len() as i64),
+                EXT_KEY_USAGE => cbor_encode_ext_key_usage(extn_value, crit_sign * extensions.len() as i64),
                 EXT_SUBJECT_ALT_NAME => cbor_encode_general_names(extn_value, ASN1_SEQ, 2),
                 EXT_BASIC_CONSTRAINTS => cbor_encode_ext_basic_constraints(extn_value),
                 EXT_CRL_DIST_POINTS => cbor_encode_ext_crl_distribution_points(extn_value),
@@ -426,7 +426,7 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
                 EXT_AUTH_KEY_ID => cbor_encode_ext_authority_key_identifier(extn_value),
                 EXT_EXT_KEY_USAGE => cbor_encode_ext_extended_key_usage(extn_value),
                 EXT_AUTH_INFO => cbor_encode_ext_info_access(extn_value),
-                EXT_SCT_LIST => cbor_ext_sct(extn_value, not_before),
+                EXT_SCT_LIST => cbor_encode_ext_signed_certificate_timestamp(extn_value, not_before),
                 EXT_SUBJECT_DIRECTORY_ATTR => cbor_store_extension_raw(extn_value, extension[0], oid), //cbor_ext_directory_attr(extn_value),
                 EXT_ISSUER_ALT_NAME => cbor_encode_general_names(extn_value, ASN1_SEQ, 2),           //Note: "Issuer Alternative Name (issuerAltName). extensionValue is encoded exactly like subjectAltName."
                 EXT_NAME_CONSTRAINTS => cbor_store_extension_raw(extn_value, extension[0], oid),       //cbor_ext_name_constraints(extn_value),  //Sample certificates welcome
@@ -480,27 +480,27 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
 // CBOR encode a DER encoded Name field
 fn cbor_encode_name(der_bytes: &[u8]) -> Vec<u8> {
     let name = lder_vec(der_bytes, ASN1_SEQ);
-    let mut vec = Vec::new();
-    for rdn in &name {
-        let attributes = lder_vec_len(rdn, ASN1_SET, 1);
-        for item in attributes {
-            let attribute = lder_vec_len(item, ASN1_SEQ, 2);
+    let mut attributes_result = Vec::new();
+    for relative_distinguished_name in &name {
+        let attributes = lder_vec_len(relative_distinguished_name, ASN1_SET, 1);
+        for attribute_item in attributes {
+            let attribute = lder_vec_len(attribute_item, ASN1_SEQ, 2);
             let oid = lder(attribute[0], ASN1_OID);
             let der_value = attribute[1];
-            if let Some(att_type) = att_map(oid) {
-                if att_type == ATT_EMAIL || att_type == ATT_DOMAIN_COMPONENT {
-                    vec.push(lcbor_int(att_type as i64));
-                    let att_value = lder(der_value, ASN1_IA5_SRT);
-                    vec.push(lcbor_text(att_value));
+            if let Some(attribute_type) = att_map(oid) {
+                if attribute_type == ATT_EMAIL || attribute_type == ATT_DOMAIN_COMPONENT {
+                    attributes_result.push(lcbor_int(attribute_type as i64));
+                    let attribute_value = lder(der_value, ASN1_IA5_SRT);
+                    attributes_result.push(lcbor_text(attribute_value));
                 } else {
-                    let (sign, att_value) = if der_value[0] == ASN1_PRINT_STR { (-1, lder(der_value, ASN1_PRINT_STR)) } else { (1, lder(der_value, ASN1_UTF8_STR)) };
-                    vec.push(lcbor_int(sign * att_type as i64));
-                    vec.push(lcbor_text(att_value));
+                    let (sign, attribute_value) = if der_value[0] == ASN1_PRINT_STR { (-1, lder(der_value, ASN1_PRINT_STR)) } else { (1, lder(der_value, ASN1_UTF8_STR)) };
+                    attributes_result.push(lcbor_int(sign * attribute_type as i64));
+                    attributes_result.push(lcbor_text(attribute_value));
                 }
             } else {
                 print_warning("No C509 int regisered for attribute oid", attribute[0], oid);
-                vec.push(lcbor_bytes(oid));
-                vec.push(lcbor_bytes(der_value));
+                attributes_result.push(lcbor_bytes(oid));
+                attributes_result.push(lcbor_bytes(der_value));
             }
         }
     }
@@ -515,27 +515,27 @@ fn cbor_encode_name(der_bytes: &[u8]) -> Vec<u8> {
      for a total length of 7.
     *Otherwise it is encoded as a CBOR text string.
     */
-    let eui_64 = regex::Regex::new(r"^([A-F\d]{2}-){7}[A-F\d]{2}$").unwrap();
-    let is_hex = regex::Regex::new(r"^(?:[A-Fa-f0-9]{2})*$").unwrap();
-    if vec.len() == 2 && vec[0] == [ATT_COMMON_NAME as u8] {
-        //let cn = from_utf8(&vec[0][1..]).unwrap();
-        vec.remove(0);
-        if eui_64.is_match(from_utf8(&vec[0][1..]).unwrap()) {
-            vec[0].retain(|&x| x != b'-' && x != 0x77); // 0x77 = text string length 23
-            if &vec[0][6..10] == b"FFFE" {
-                vec[0].drain(6..10);
+    let eui_64_pattern = regex::Regex::new(r"^([A-F\d]{2}-){7}[A-F\d]{2}$").unwrap();
+    let hex_pattern = regex::Regex::new(r"^(?:[A-Fa-f0-9]{2})*$").unwrap();
+    if attributes_result.len() == 2 && attributes_result[0] == [ATT_COMMON_NAME as u8] {
+        //let cn = from_utf8(&attributes_result[0][1..]).unwrap();
+        attributes_result.remove(0);
+        if eui_64_pattern.is_match(from_utf8(&attributes_result[0][1..]).unwrap()) {
+            attributes_result[0].retain(|&byte| byte != b'-' && byte != 0x77); // 0x77 = text string length 23
+            if &attributes_result[0][6..10] == b"FFFE" {
+                attributes_result[0].drain(6..10);
             }
-            vec[0].insert(0, '1' as u8);
-            vec[0].insert(0, '0' as u8);
-            vec[0] = lcbor_bytes(&hex::decode(&vec[0]).unwrap());
-        } else if is_hex.is_match(from_utf8(&vec[0][1..]).unwrap()) {
-            vec[0][0] = '0' as u8; //overwrite the added utf8 text marker at the start
-            vec[0].insert(0, '0' as u8);
-            vec[0] = lcbor_bytes(&hex::decode(&vec[0]).unwrap());
+            attributes_result[0].insert(0, '1' as u8);
+            attributes_result[0].insert(0, '0' as u8);
+            attributes_result[0] = lcbor_bytes(&hex::decode(&attributes_result[0]).unwrap());
+        } else if hex_pattern.is_match(from_utf8(&attributes_result[0][1..]).unwrap()) {
+            attributes_result[0][0] = '0' as u8; //overwrite the added utf8 text marker at the start
+            attributes_result[0].insert(0, '0' as u8);
+            attributes_result[0] = lcbor_bytes(&hex::decode(&attributes_result[0]).unwrap());
         }
-        return vec[0].clone();
+        return attributes_result[0].clone();
     }
-    lcbor_array(&vec)
+    lcbor_array(&attributes_result)
 }
 /******************************************************************************************************/
 // CBOR encode a DER encoded Time field (returns ~biguint)
@@ -602,55 +602,55 @@ Authority Key Identifier extension
 Note: no wrapping array if content is a single name of type opt
 */
 fn cbor_encode_general_names(der_bytes: &[u8], asn1_tag: u8, opt: u8) -> Vec<u8> {
-    let unwrap = opt;
+    let unwrap_single_name = opt;
     let names = lder_vec(der_bytes, asn1_tag);
-    let mut vec = Vec::new();
+    let mut result = Vec::new();
     for name in names {
         //println!("handling name: {:02x?}", name);
-        let value = lder(name, name[0]);
+        let name_value = lder(name, name[0]);
         let context_tag = name[0] as u64 & 0x0f;
         //println!("Storing context tag: {}", context_tag); //debug
         //ongoing: special handling of otherName:
         if context_tag == 0 {
-            let inner_value = &value[12..]; //TODO, check handling of long values
-            match value {
-                [0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x08, ..] => match value[9] {
+            let inner_value = &name_value[12..]; //TODO, check handling of long values
+            match name_value {
+                [0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x08, ..] => match name_value[9] {
                     0x0B => {
-                        vec.push(lcbor_int(-3));
-                        vec.push(lcbor_bytes(inner_value));
+                        result.push(lcbor_int(-3));
+                        result.push(lcbor_bytes(inner_value));
                     }
                     0x09 => {
-                        vec.push(lcbor_int(-2));
-                        vec.push(cbor_encode_other_name_smtp_mailbox(inner_value));
+                        result.push(lcbor_int(-2));
+                        result.push(cbor_encode_other_name_smtp_mailbox(inner_value));
                     }
                     0x04 => {
-                        vec.push(lcbor_int(-1));
-                        vec.push(cbor_encode_other_name_hardware_module(inner_value));
+                        result.push(lcbor_int(-1));
+                        result.push(cbor_encode_other_name_hardware_module(inner_value));
                     }
                     _ => {
-                        vec.push(lcbor_int(0));
-                        vec.push(cbor_encode_other_name(value))
+                        result.push(lcbor_int(0));
+                        result.push(cbor_encode_other_name(name_value))
                     } //resort to generic otherName encoding, [ ~oid, bytes ]
                 },
                 _ => {
-                    vec.push(lcbor_int(0));
-                    vec.push(cbor_encode_other_name(value))
+                    result.push(lcbor_int(0));
+                    result.push(cbor_encode_other_name(name_value))
                 } //same as above
             }
         } else {
-            vec.push(lcbor_uint(context_tag));
-            vec.push(match context_tag {
-                1 => lcbor_text(value),  // rfc822Name
-                2 => lcbor_text(value),  // dNSName
-                4 => cbor_encode_name(value),   // Name (TODO a4?)
-                6 => lcbor_text(value),  // uniformResourceIdentifier
-                7 => lcbor_bytes(value), // iPAddress
-                8 => lcbor_bytes(value), // registeredID : should be stored as ~oid
+            result.push(lcbor_uint(context_tag));
+            result.push(match context_tag {
+                1 => lcbor_text(name_value),  // rfc822Name
+                2 => lcbor_text(name_value),  // dNSName
+                4 => cbor_encode_name(name_value),   // Name (TODO a4?)
+                6 => lcbor_text(name_value),  // uniformResourceIdentifier
+                7 => lcbor_bytes(name_value), // iPAddress
+                8 => lcbor_bytes(name_value), // registeredID : should be stored as ~oid
                 _ => panic!("Unknown general name"),
             })
         }
     }
-    cbor_optimize_array(&vec, unwrap)
+    cbor_optimize_array(&result, unwrap_single_name)
 }
 /******************************************************************************************************/
 /*
@@ -1092,24 +1092,24 @@ fn cbor_encode_ext_ip_resources(der_bytes: &[u8]) -> Vec<u8> {
 /*
 CBOR encode EXT_KEY_USAGE - 2 - Key Usage Extension
 */
-fn cbor_ext_key_use(bs: &[u8], signed_nr_ext: i64) -> Vec<u8> {
-    assert!(bs[0] == ASN1_BIT_STR, "Expected 0x03");
-    let len = bs[1];
-    assert!((2..4).contains(&len), "Expected key usage ASN.1 field len to be 2 or 3 bytes");
-    //Note: at encoding time we don't need to handle bs[2] / the number of free bytes
-    let v = bs[3].swap_bits();
-    if len == 3 {
-        assert!(bs[4] == 128, "Error in KeyUsage bitstring, more than 9 bits used");
-        let w = (v as u64) + 256;
-        if signed_nr_ext == -1 {
-            return lcbor_int(-(w as i64));
+fn cbor_encode_ext_key_usage(bit_string: &[u8], signed_nr_extensions: i64) -> Vec<u8> {
+    assert!(bit_string[0] == ASN1_BIT_STR, "Expected 0x03");
+    let length = bit_string[1];
+    assert!((2..4).contains(&length), "Expected key usage ASN.1 field len to be 2 or 3 bytes");
+    //Note: at encoding time we don't need to handle bit_string[2] / the number of free bytes
+    let reversed_bits = bit_string[3].swap_bits();
+    if length == 3 {
+        assert!(bit_string[4] == 128, "Error in KeyUsage bitstring, more than 9 bits used");
+        let key_usage_value = (reversed_bits as u64) + 256;
+        if signed_nr_extensions == -1 {
+            return lcbor_int(-(key_usage_value as i64));
         }
-        return lcbor_uint(w as u64);
+        return lcbor_uint(key_usage_value as u64);
     }
-    if signed_nr_ext == -1 {
-        return lcbor_int(-(v as i64));
+    if signed_nr_extensions == -1 {
+        return lcbor_int(-(reversed_bits as i64));
     }
-    lcbor_uint(v as u64)
+    lcbor_uint(reversed_bits as u64)
 }
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -1118,36 +1118,36 @@ fn cbor_ext_key_use(bs: &[u8], signed_nr_ext: i64) -> Vec<u8> {
 // CBOR encodes a SCT extention
 // https://letsencrypt.org/2018/04/04/sct-encoding.html
 // refactor signature calculation
-fn cbor_ext_sct(b: &[u8], not_before: &[u8]) -> Vec<u8> {
-    let mut temp = &lder(b, ASN1_OCTET_STR)[2..];
-    let mut scts = Vec::new();
+fn cbor_encode_ext_signed_certificate_timestamp(der_bytes: &[u8], not_before: &[u8]) -> Vec<u8> {
+    let mut temp = &lder(der_bytes, ASN1_OCTET_STR)[2..];
+    let mut sct_list = Vec::new();
     while !temp.is_empty() {
-        let end = ((temp[0] as usize) << 8) + (temp[1] as usize);
-        let (value, temp2) = (&temp[2..2 + end], &temp[2 + end..]);
-        scts.push(value);
-        temp = temp2;
+        let sct_length = ((temp[0] as usize) << 8) + (temp[1] as usize);
+        let (sct_value, remaining) = (&temp[2..2 + sct_length], &temp[2 + sct_length..]);
+        sct_list.push(sct_value);
+        temp = remaining;
     }
-    let mut vec = Vec::new();
-    for sct in scts {
+    let mut result = Vec::new();
+    for sct in sct_list {
         assert!(sct[0] == 0, "expected SCT version 1");
-        vec.push(lcbor_bytes(&sct[1..33]));
-        let ts = be_bytes_to_u64(&sct[33..41]) as i64;
+        result.push(lcbor_bytes(&sct[1..33]));
+        let timestamp = be_bytes_to_u64(&sct[33..41]) as i64;
         let not_before_ms = 1000 * be_bytes_to_u64(&cbor_encode_time(not_before, 0)[1..]) as i64;
-        vec.push(lcbor_int(ts - not_before_ms));
+        result.push(lcbor_int(timestamp - not_before_ms));
         assert!(sct[41..43] == [0, 0], "expected no SCT extentsions");
         assert!(sct[43..45] == [4, 3], "expected SCT SHA-256 ECDSA");
-        vec.push(lcbor_int(SIG_ECDSA_SHA256 as i64));
+        result.push(lcbor_int(SIG_ECDSA_SHA256 as i64));
 
         let signature_seq = lder_vec(&sct[47..], ASN1_SEQ);
         trace!("ENCODING EXT_SCT_LIST TO CBOR: working with signature_seq of len {}: {:02x?}", signature_seq.len(), signature_seq);
-        let r = lder_uint(signature_seq[0]).to_vec();
-        let s = lder_uint(signature_seq[1]).to_vec();
-        let max = std::cmp::max(r.len(), s.len());
-        let signature_ecdsa = &[vec![0; max - r.len()], r, vec![0; max - s.len()], s].concat();
+        let r_value = lder_uint(signature_seq[0]).to_vec();
+        let s_value = lder_uint(signature_seq[1]).to_vec();
+        let max_length = std::cmp::max(r_value.len(), s_value.len());
+        let signature_ecdsa = &[vec![0; max_length - r_value.len()], r_value, vec![0; max_length - s_value.len()], s_value].concat();
         trace!("ENCODING EXT_SCT_LIST TO CBOR: pushing signature of len {}: {:02x?}", signature_ecdsa.len(), signature_ecdsa);
-        vec.push(lcbor_bytes(signature_ecdsa));
+        result.push(lcbor_bytes(signature_ecdsa));
     }
-    lcbor_array(&vec)
+    lcbor_array(&result)
 }
 /*
 Above is the list of encoding functions for the supported extensions listed in C509 Extensions Registry
