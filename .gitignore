@@ -23,3 +23,7 @@ draft-ietf-cose-cbor-encoded-cert.xml
 package-lock.json
 report.xml
 !requirements.txt
+
+# Rust build artifacts
+c509_demo_impl/target/
+c509_demo_impl/Cargo.lock

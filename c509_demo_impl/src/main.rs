@@ -182,7 +182,8 @@ fn get_certs_from_tls(domain_name: String) -> Vec<Cert> {
     config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
     let dns_name = webpki::DNSNameRef::try_from_ascii_str(&domain_name).unwrap();
     let mut sess = rustls::ClientSession::new(&std::sync::Arc::new(config), dns_name);
-    let mut sock = std::net::TcpStream::connect(domain_name + ":443").unwrap();
+    let conn_addr = format!("{}:443", domain_name);
+    let mut sock = std::net::TcpStream::connect(conn_addr).unwrap();
     let mut tls = rustls::Stream::new(&mut sess, &mut sock);
     tls.write_all(b"GET / HTTP/1.1").unwrap();
     tls.flush().unwrap();
@@ -197,9 +198,9 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
     config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
     let dns_name = webpki::DNSNameRef::try_from_ascii_str(&domain_name).unwrap();
     let mut sess = rustls::ClientSession::new(&std::sync::Arc::new(config), dns_name);
-    let conn_addr = domain_name.to_owned() + ":443";
+    let conn_addr = format!("{}:443", domain_name);
 
-    let sock_test = std::net::TcpStream::connect(conn_addr);
+    let sock_test = std::net::TcpStream::connect(&conn_addr);
     let mut sock: std::net::TcpStream; // = std::net::TcpStream::connect(conn_addr).unwrap();
                                        // let mut fail_now = false;
     if let Ok(stream) = sock_test {
@@ -235,16 +236,14 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
 // Parse a DER encoded X509 and encode it as C509, re-encode back to X.509 and check if successful
 fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
     let oi = input.clone();
-    let ooi = input.clone();
     let parsed_cert = parse_x509_cert(input);
     let reversed_cert = parse_c509_cert(lcbor_array(&parsed_cert.cbor), false);
-    //let rev_copy = reversed_cert.der.clone();
 
     let ndate = chrono::Local::now();
     let ts = ndate.format("%Y-%m-%d_%H:%M:%S.%s");
 
-    let correct_input_path = "../could_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
-    let failed_input_path = "../failed_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
+    let correct_input_path = format!("../could_convert/{}_{}_{}", host, sub_no, ts);
+    let failed_input_path = format!("../failed_convert/{}_{}_{}", host, sub_no, ts);
     let write_path; 
 
     if reversed_cert.der == oi {
@@ -255,18 +254,18 @@ fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
         warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), failed_input_path);
         write_path = &failed_input_path;
     }
-    let write_input_path = write_path.to_owned() + ".input.hex";
-    let write_output_path = write_path.to_owned() + ".output.hex";
+    let write_input_path = format!("{}.input.hex", write_path);
+    let write_output_path = format!("{}.output.hex", write_path);
     let mut input_file = File::create(write_input_path).expect("File not found");
     let mut output_file = File::create(write_output_path).expect("File not found");
 
-    for byte in oi {
+    for byte in &oi {
         let _ = write!(input_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
-    for byte in reversed_cert.der {
+    for byte in &reversed_cert.der {
         let _ = write!(output_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
-    Cert { der: ooi, cbor: Vec::new() }
+    Cert { der: oi, cbor: Vec::new() }
 }
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -2334,10 +2333,10 @@ fn decompress_ecc_key(pub_key_x: Vec<u8>, is_even: bool, ecc_type_id: i64) -> Ve
         }
     };
     //let big_int = &&x;
-    let y2 = (pow(x.clone(), 3) + &mc.a * &x.clone() + &mc.b) % &mc.p;
+    let y2 = (pow(&x, 3) + &mc.a * &x + &mc.b) % &mc.p;
     let mut y = y2.modpow(&((&mc.p + BigInt::one()) / BigInt::from(4)), &mc.p);
 
-    let y_is_even = y.clone() % 2 == BigInt::zero();
+    let y_is_even = &y % 2 == BigInt::zero();
     //  let mut ys = y.clone();
     //let mut y_inv = y.clone();
 
@@ -2615,107 +2614,107 @@ pub fn parse_cbor_sig_info(sig_alg: &Value, sig_val: &Value) -> (Vec<u8>, Vec<u8
                 SIG_RSA_V15_SHA1 => {
                     oid = SIG_RSA_V15_SHA1_OID.as_bytes().to_vec(); //TODO check param
                     param = ASN1_NULL.to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                 }
                 SIG_ECDSA_SHA1 => {
                     oid = SIG_ECDSA_SHA1_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                 }
                 SIG_ECDSA_SHA256 => {
                     oid = SIG_ECDSA_SHA256_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                     //  panic!("not now");
                 }
                 SIG_ECDSA_SHA384 => {
                     oid = SIG_ECDSA_SHA384_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_ECDSA_SHA512 => {
                     oid = SIG_ECDSA_SHA512_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_ECDSA_SHAKE128 => {
                     oid = SIG_ECDSA_SHA512_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_ECDSA_SHAKE256 => {
                     oid = SIG_ECDSA_SHAKE256_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_ED25519 => {
                     oid = SIG_ED25519_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_ED448 => {
                     oid = SIG_ED448_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_ecc_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_ecc_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 //MAC based
                 SIG_SHA256_HMAC_SHA256 => {
                     oid = SIG_SHA256_HMAC_SHA256_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_mac_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_mac_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_SHA384_HMAC_SHA384 => {
                     oid = SIG_SHA384_HMAC_SHA384_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_mac_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_mac_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_SHA512_HMAC_SHA512 => {
                     oid = SIG_SHA512_HMAC_SHA512_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_mac_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_mac_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 //RSA based
                 SIG_RSA_V15_SHA256 => {
                     oid = SIG_RSA_V15_SHA256_OID.as_bytes().to_vec();
                     param = ASN1_NULL.to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_V15_SHA384 => {
                     oid = SIG_RSA_V15_SHA384_OID.as_bytes().to_vec();
                     param = ASN1_NULL.to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_V15_SHA512 => {
                     oid = SIG_RSA_V15_SHA512_OID.as_bytes().to_vec();
                     param = ASN1_NULL.to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_PSS_SHA256 => {
                     oid = SIG_RSA_PSS_SHA256_OID.as_bytes().to_vec();
                     //param = TODO
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_PSS_SHA384 => {
                     oid = SIG_RSA_PSS_SHA384_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_PSS_SHA512 => {
                     oid = SIG_RSA_PSS_SHA512_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_PSS_SHAKE128 => {
                     oid = SIG_RSA_PSS_SHAKE128_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 SIG_RSA_PSS_SHAKE256 => {
                     oid = SIG_RSA_PSS_SHAKE256_OID.as_bytes().to_vec();
-                    parsed_sig_val = parse_cbor_rsa_sig_value(sig_val_vec.clone());
+                    parsed_sig_val = parse_cbor_rsa_sig_value(&sig_val_vec);
                     trace!("parse_cbor_sig_info, encoded sig val bytes: {:02x?}", parsed_sig_val);
                 }
                 //Some odd ones, not yet supported
@@ -2750,7 +2749,7 @@ pub fn parse_cbor_sig_info(sig_alg: &Value, sig_val: &Value) -> (Vec<u8>, Vec<u8
 //***************************************************************************************************************************************
 //use asn1_rs::{BitString, Sequence, Integer, FromBer, ToDer};
 //use asn1_rs::{BitString, Sequence, Integer};
-pub fn parse_cbor_ecc_sig_value(sig_val_bytes: Vec<u8>) -> Vec<u8> {
+pub fn parse_cbor_ecc_sig_value(sig_val_bytes: &[u8]) -> Vec<u8> {
     let mut result: Vec<Vec<u8>> = Vec::new();
     //let mut writer = Vec::new();
 
@@ -2769,10 +2768,10 @@ pub fn parse_cbor_ecc_sig_value(sig_val_bytes: Vec<u8>) -> Vec<u8> {
 
     lder_to_bit_str(lder_to_seq(result))
 }
-pub fn parse_cbor_rsa_sig_value(sig_val_bytes: Vec<u8>) -> Vec<u8> {
-    lder_to_bit_str(sig_val_bytes)
+pub fn parse_cbor_rsa_sig_value(sig_val_bytes: &[u8]) -> Vec<u8> {
+    lder_to_bit_str(sig_val_bytes.to_vec())
 }
-pub fn parse_cbor_mac_sig_value(_: Vec<u8>) -> Vec<u8> {
+pub fn parse_cbor_mac_sig_value(_: &[u8]) -> Vec<u8> {
     panic!("Reconstruction of MAC based signatures not yet supported");
 }
 //***************************************************************************************************************************************
