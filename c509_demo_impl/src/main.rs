@@ -989,8 +989,8 @@ fn cbor_ext_crl_dist(b: &[u8]) -> Vec<u8> {
         }
         if vec2.len() > 1 {
             vec.push(lcbor_array(&vec2))
-        } else {
-            vec.push(vec2[0].clone())
+        } else if !vec2.is_empty() {
+            vec.push(vec2.into_iter().next().unwrap())
         }
     }
     lcbor_array(&vec)
@@ -2025,7 +2025,7 @@ pub fn map_pk_id_to_oid(input: &Value) -> (Option<i64>, Vec<u8>) {
     //  Some(42)
     match input {
         Value::Integer(alg_id) => match *alg_id as i64 {
-            PK_RSA_ENC => (Some(PK_RSA_ENC), lder_to_generic(PK_RSA_ENC_OID.as_bytes().to_vec(), ASN1_OID).clone()),
+            PK_RSA_ENC => (Some(PK_RSA_ENC), lder_to_generic(PK_RSA_ENC_OID.as_bytes().to_vec(), ASN1_OID)),
             PK_SECP256R => (Some(PK_SECP256R), lder_to_generic(PK_SECP256R_OID.as_bytes().to_vec(), ASN1_OID)),
             PK_SECP384R => (Some(PK_SECP384R), lder_to_generic(PK_SECP384R_OID.as_bytes().to_vec(), ASN1_OID)),
             PK_SECP521R => (Some(PK_SECP521R), lder_to_generic(PK_SECP521R_OID.as_bytes().to_vec(), ASN1_OID)),
