@@ -3759,10 +3759,10 @@ pub mod help {
     use serde_cbor::Value;
     use std::io::Write;
     // Convert a byte string to u64 uint
-    pub fn be_bytes_to_u64(b: &[u8]) -> u64 {
-        let l = b.len();
-        assert!(l > 0 && l < 9, "Unexpected length");
-        (0..l).into_iter().map(|i| (b[i] as u64) << (8 * (l - i - 1))).sum()
+    pub fn be_bytes_to_u64(bytes: &[u8]) -> u64 {
+        let length = bytes.len();
+        assert!(length > 0 && length < 9, "Unexpected length");
+        (0..length).into_iter().map(|i| (bytes[i] as u64) << (8 * (length - i - 1))).sum()
     }
     // Brotli compression
     pub fn brotli(input: &[u8]) -> Vec<u8> {
@@ -3771,33 +3771,33 @@ pub mod help {
         writer.into_inner()
     }
     // Print a vec to cout
-    fn print_internal(s: &str, v: &[u8], is_error: bool) {
-        let heading = format!("{} ({} bytes)", s, v.len());
+    fn print_internal(message: &str, data: &[u8], is_error: bool) {
+        let heading = format!("{} ({} bytes)", message, data.len());
         if is_error {
             print!("{}", heading.red());
         } else {
             print!("{}", heading.yellow());
         }
-        for (i, byte) in v.iter().enumerate() {
+        for (i, byte) in data.iter().enumerate() {
             print!("{}{:02X}", if i % 23 == 0 { "\n" } else { " " }, byte);
         }
         println!("\n");
     }
     // Print an error to cout (red and white)
-    pub fn print_vec(s: &str, v: &[u8]) {
-        print_internal(s, v, false);
+    pub fn print_vec(message: &str, data: &[u8]) {
+        print_internal(message, data, false);
     }
     // Print a warning to cout
-    pub fn print_str_warning(s: &str) {
-        let heading = format!("{}", s);
+    pub fn print_str_warning(message: &str) {
+        let heading = format!("{}", message);
         println!("{}", heading.red());
     }
 
     // Print an error to cout (red and white)
-    pub fn print_warning(s: &str, v: &[u8], oid: &[u8]) {
+    pub fn print_warning(message: &str, data: &[u8], oid: &[u8]) {
         let oid_str: String = ObjectIdentifier::try_from(oid).unwrap().into();
-        let text = format!("{} ({})", s, oid_str);
-        print_internal(&text, v, true);
+        let text = format!("{} ({})", message, oid_str);
+        print_internal(&text, data, true);
     }
     // Print info to cout (green)
     pub fn print_info(rows: &[String]) {
@@ -3809,10 +3809,10 @@ pub mod help {
         println!();
     }
 
-    pub fn usize_to_u8_vec(x: usize) -> Vec<u8> {
+    pub fn usize_to_u8_vec(value: usize) -> Vec<u8> {
         let mut result = Vec::new();
         for i in 0..std::mem::size_of::<usize>() {
-            let byte = ((x >> (i * 8)) & 0xff) as u8;
+            let byte = ((value >> (i * 8)) & 0xff) as u8;
             result.push(byte);
         }
         while let Some(&0) = result.first() {
@@ -3875,50 +3875,50 @@ pub mod lder {
     pub const SCT_EXT_AID: &[u8] = &[0x00, 0x00, 0x04, 0x03];
 
     // Parse a DER encoded type and returns the value as a byte string
-    pub fn lder(b: &[u8], tag: u8) -> &[u8] {
-        assert!(b[0] == tag, "Unexpected type! Expected {:x} but got {:x}", tag, b[0]);
-        let (value, none) = lder_split(b, true);
+    pub fn lder(der_bytes: &[u8], tag: u8) -> &[u8] {
+        assert!(der_bytes[0] == tag, "Unexpected type! Expected {:x} but got {:x}", tag, der_bytes[0]);
+        let (value, none) = lder_split(der_bytes, true);
         assert!(none.is_empty(), "Expected empty slice!");
         value
     }
     // Parse a DER encoded uint and removes the first zero byte
-    pub fn lder_uint(b: &[u8]) -> &[u8] {
-        let value = lder(b, ASN1_INT);
+    pub fn lder_uint(der_bytes: &[u8]) -> &[u8] {
+        let value = lder(der_bytes, ASN1_INT);
         if value.len() > 1 && value[0] == 0 {
             return &value[1..];
         }
         value
     }
     // Parse a DER encoded sequence/set type and returns the elements as a vector
-    pub fn lder_vec(b: &[u8], tag: u8) -> Vec<&[u8]> {
-        let mut vec = Vec::new();
+    pub fn lder_vec(der_bytes: &[u8], tag: u8) -> Vec<&[u8]> {
+        let mut elements = Vec::new();
 
-        let mut rest = lder(b, tag);
-        while !rest.is_empty() {
-            let (tlv, temp) = lder_split(rest, false);
-            vec.push(tlv);
-            rest = temp;
+        let mut remaining = lder(der_bytes, tag);
+        while !remaining.is_empty() {
+            let (tlv, rest) = lder_split(remaining, false);
+            elements.push(tlv);
+            remaining = rest;
         }
-        vec
+        elements
     }
     // Parse a DER encoded sequence/set with a known expected length
-    pub fn lder_vec_len(b: &[u8], tag: u8, length: usize) -> Vec<&[u8]> {
-        let vec = lder_vec(b, tag);
-        assert!(vec.len() == length, "DER encoded sequence/set has invalid length!");
-        vec
+    pub fn lder_vec_len(der_bytes: &[u8], tag: u8, length: usize) -> Vec<&[u8]> {
+        let elements = lder_vec(der_bytes, tag);
+        assert!(elements.len() == length, "DER encoded sequence/set has invalid length!");
+        elements
     }
     // Parse a sequence of DER encoded types and returns a tuple
     // The tuple contains (first type, rest of sequence/set)
-    pub fn lder_split(b: &[u8], value_only: bool) -> (&[u8], &[u8]) {
-        assert!(b[1] < 0x84, "Did not expected length >= 2^24");
-        let (start, end) = match b[1] {
+    pub fn lder_split(der_bytes: &[u8], value_only: bool) -> (&[u8], &[u8]) {
+        assert!(der_bytes[1] < 0x84, "Did not expected length >= 2^24");
+        let (start, end) = match der_bytes[1] {
             0x80 => panic!("Indefinite length encoding!"),
-            0x81 => (3, 3 + b[2] as usize),
-            0x82 => (4, 4 + be_bytes_to_u64(&b[2..4]) as usize),
-            0x83 => (5, 5 + be_bytes_to_u64(&b[2..5]) as usize),
-            _ => (2, 2 + b[1] as usize),
+            0x81 => (3, 3 + der_bytes[2] as usize),
+            0x82 => (4, 4 + be_bytes_to_u64(&der_bytes[2..4]) as usize),
+            0x83 => (5, 5 + be_bytes_to_u64(&der_bytes[2..5]) as usize),
+            _ => (2, 2 + der_bytes[1] as usize),
         };
-        (&b[value_only as usize * start..end], &b[end..])
+        (&der_bytes[value_only as usize * start..end], &der_bytes[end..])
     }
     pub fn lder_to_bit_str(bytes: Vec<u8>) -> Vec<u8> {
         let mut result: Vec<u8> = bytes;
@@ -4023,56 +4023,56 @@ pub mod lder {
 // ======================================================
 pub mod lcbor {
     // CBOR encodes an unsigned interger
-    pub fn lcbor_uint(u: u64) -> Vec<u8> {
-        lcbor_type_arg(0, u)
+    pub fn lcbor_uint(value: u64) -> Vec<u8> {
+        lcbor_type_arg(0, value)
     }
     // CBOR encodes an signed integer
-    pub fn lcbor_int(i: i64) -> Vec<u8> {
-        if i < 0 {
-            lcbor_type_arg(1, -i as u64 - 1)
+    pub fn lcbor_int(value: i64) -> Vec<u8> {
+        if value < 0 {
+            lcbor_type_arg(1, -value as u64 - 1)
         } else {
-            lcbor_uint(i as u64)
+            lcbor_uint(value as u64)
         }
     }
     // CBOR encodes a byte string
-    pub fn lcbor_bytes(b: &[u8]) -> Vec<u8> {
-        [&lcbor_type_arg(2, b.len() as u64), b].concat()
+    pub fn lcbor_bytes(bytes: &[u8]) -> Vec<u8> {
+        [&lcbor_type_arg(2, bytes.len() as u64), bytes].concat()
     }
     // CBOR encodes a text string
-    pub fn lcbor_text(b: &[u8]) -> Vec<u8> {
-        let s = std::str::from_utf8(b).unwrap(); // check that this is valid utf8
-        [&lcbor_type_arg(3, s.len() as u64), s.as_bytes()].concat()
+    pub fn lcbor_text(bytes: &[u8]) -> Vec<u8> {
+        let text = std::str::from_utf8(bytes).unwrap(); // check that this is valid utf8
+        [&lcbor_type_arg(3, text.len() as u64), text.as_bytes()].concat()
     }
     // CBOR encodes an array
-    pub fn lcbor_array(v: &[Vec<u8>]) -> Vec<u8> {
-        [lcbor_type_arg(4, v.len() as u64), v.concat()].concat()
+    pub fn lcbor_array(elements: &[Vec<u8>]) -> Vec<u8> {
+        [lcbor_type_arg(4, elements.len() as u64), elements.concat()].concat()
     }
     pub const CBOR_FALSE: u8 = 20;
     pub const CBOR_TRUE: u8 = 21;
     pub const CBOR_NULL: u8 = 22;
     // CBOR encodes a simple value
-    pub fn lcbor_simple(u: u8) -> Vec<u8> {
-        lcbor_type_arg(7, u as u64)
+    pub fn lcbor_simple(value: u8) -> Vec<u8> {
+        lcbor_type_arg(7, value as u64)
     }
     // Internal CBOR encoding helper funtion
-    fn lcbor_type_arg(t: u8, u: u64) -> Vec<u8> {
-        let mut vec = vec![t << 5];
-        if u < 24 {
-            vec[0] |= u as u8;
-        } else if u < u8::MAX as u64 {
-            vec[0] |= 24;
-            vec.extend(&(u as u8).to_be_bytes());
-        } else if u < u16::MAX as u64 {
-            vec[0] |= 25;
-            vec.extend(&(u as u16).to_be_bytes());
-        } else if u < u32::MAX as u64 {
-            vec[0] |= 26;
-            vec.extend(&(u as u32).to_be_bytes());
+    fn lcbor_type_arg(major_type: u8, argument: u64) -> Vec<u8> {
+        let mut result = vec![major_type << 5];
+        if argument < 24 {
+            result[0] |= argument as u8;
+        } else if argument < u8::MAX as u64 {
+            result[0] |= 24;
+            result.extend(&(argument as u8).to_be_bytes());
+        } else if argument < u16::MAX as u64 {
+            result[0] |= 25;
+            result.extend(&(argument as u16).to_be_bytes());
+        } else if argument < u32::MAX as u64 {
+            result[0] |= 26;
+            result.extend(&(argument as u32).to_be_bytes());
         } else {
-            vec[0] |= 27;
-            vec.extend(&u.to_be_bytes());
+            result[0] |= 27;
+            result.extend(&argument.to_be_bytes());
         }
-        vec
+        result
     }
 }
 
