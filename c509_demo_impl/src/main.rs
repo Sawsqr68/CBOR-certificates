@@ -90,6 +90,7 @@ use std::fs::File;
 
 use log::{trace, debug, info, warn};
 use env_logger::Env;
+use once_cell::sync::Lazy;
 
 
 pub const SECG_EVEN: u8 = 0x02;
@@ -234,39 +235,37 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
 /******************************************************************************************************/
 // Parse a DER encoded X509 and encode it as C509, re-encode back to X.509 and check if successful
 fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
-    let oi = input.clone();
-    let ooi = input.clone();
-    let parsed_cert = parse_x509_cert(input);
+    let parsed_cert = parse_x509_cert(input.clone());
     let reversed_cert = parse_c509_cert(lcbor_array(&parsed_cert.cbor), false);
-    //let rev_copy = reversed_cert.der.clone();
 
     let ndate = chrono::Local::now();
     let ts = ndate.format("%Y-%m-%d_%H:%M:%S.%s");
 
-    let correct_input_path = "../could_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
-    let failed_input_path = "../failed_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
+    // Use format! instead of string concatenation for better performance
+    let correct_input_path = format!("../could_convert/{}_{}_{}",  host, sub_no, ts);
+    let failed_input_path = format!("../failed_convert/{}_{}_{}",  host, sub_no, ts);
     let write_path; 
 
-    if reversed_cert.der == oi {
-        info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), correct_input_path);
+    if reversed_cert.der == input {
+        info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, input.len(), reversed_cert.der.len(), correct_input_path);
         write_path = &correct_input_path;
     } else {
         print_str_warning("File re-encoding failure");
-        warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), failed_input_path);
+        warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, input.len(), reversed_cert.der.len(), failed_input_path);
         write_path = &failed_input_path;
     }
-    let write_input_path = write_path.to_owned() + ".input.hex";
-    let write_output_path = write_path.to_owned() + ".output.hex";
+    let write_input_path = format!("{}.input.hex", write_path);
+    let write_output_path = format!("{}.output.hex", write_path);
     let mut input_file = File::create(write_input_path).expect("File not found");
     let mut output_file = File::create(write_output_path).expect("File not found");
 
-    for byte in oi {
+    for byte in &input {
         let _ = write!(input_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
-    for byte in reversed_cert.der {
+    for byte in &reversed_cert.der {
         let _ = write!(output_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
-    Cert { der: ooi, cbor: Vec::new() }
+    Cert { der: input, cbor: Vec::new() }
 }
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -476,6 +475,10 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
     }
     Cert { der: input, cbor: output }
 }
+// Cached regex patterns for performance
+static EUI_64_REGEX: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"^([A-F\d]{2}-){7}[A-F\d]{2}$").unwrap());
+static IS_HEX_REGEX: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"^(?:[A-Fa-f0-9]{2})*$").unwrap());
+
 /******************************************************************************************************/
 // CBOR encode a DER encoded Name field
 fn cbor_name(b: &[u8]) -> Vec<u8> {
@@ -515,12 +518,10 @@ fn cbor_name(b: &[u8]) -> Vec<u8> {
      for a total length of 7.
     *Otherwise it is encoded as a CBOR text string.
     */
-    let eui_64 = regex::Regex::new(r"^([A-F\d]{2}-){7}[A-F\d]{2}$").unwrap();
-    let is_hex = regex::Regex::new(r"^(?:[A-Fa-f0-9]{2})*$").unwrap();
     if vec.len() == 2 && vec[0] == [ATT_COMMON_NAME as u8] {
         //let cn = from_utf8(&vec[0][1..]).unwrap();
         vec.remove(0);
-        if eui_64.is_match(from_utf8(&vec[0][1..]).unwrap()) {
+        if EUI_64_REGEX.is_match(from_utf8(&vec[0][1..]).unwrap()) {
             vec[0].retain(|&x| x != b'-' && x != 0x77); // 0x77 = text string length 23
             if &vec[0][6..10] == b"FFFE" {
                 vec[0].drain(6..10);
@@ -528,7 +529,7 @@ fn cbor_name(b: &[u8]) -> Vec<u8> {
             vec[0].insert(0, '1' as u8);
             vec[0].insert(0, '0' as u8);
             vec[0] = lcbor_bytes(&hex::decode(&vec[0]).unwrap());
-        } else if is_hex.is_match(from_utf8(&vec[0][1..]).unwrap()) {
+        } else if IS_HEX_REGEX.is_match(from_utf8(&vec[0][1..]).unwrap()) {
             vec[0][0] = '0' as u8; //overwrite the added utf8 text marker at the start
             vec[0].insert(0, '0' as u8);
             vec[0] = lcbor_bytes(&hex::decode(&vec[0]).unwrap());
@@ -571,10 +572,18 @@ fn cbor_alg_id(b: &[u8]) -> Vec<u8> {
 // CBOR encodes a DER encoded ECDSA signature value
 fn cbor_ecdsa(b: &[u8]) -> Vec<u8> {
     let signature_seq = lder_vec(b, ASN1_SEQ);
-    let r = lder_uint(signature_seq[0]).to_vec();
-    let s = lder_uint(signature_seq[1]).to_vec();
+    let r = lder_uint(signature_seq[0]);
+    let s = lder_uint(signature_seq[1]);
     let max = std::cmp::max(r.len(), s.len());
-    lcbor_bytes(&[vec![0; max - r.len()], r, vec![0; max - s.len()], s].concat())
+    
+    // Pre-allocate the result vector with exact capacity
+    let mut result = Vec::with_capacity(max * 2);
+    result.extend(std::iter::repeat(0).take(max - r.len()));
+    result.extend_from_slice(r);
+    result.extend(std::iter::repeat(0).take(max - s.len()));
+    result.extend_from_slice(s);
+    
+    lcbor_bytes(&result)
 }
 fn cbor_opt_array(vec: &[Vec<u8>], t: u8) -> Vec<u8> {
     if vec.len() == 2 && vec[0] == [t] {
@@ -3921,35 +3930,54 @@ pub mod lder {
         (&b[value_only as usize * start..end], &b[end..])
     }
     pub fn lder_to_bit_str(bytes: Vec<u8>) -> Vec<u8> {
-        let mut result: Vec<u8> = bytes;
-        result.insert(0, 0x00); //TODO: do we care about the short strings here?
+        let mut result = Vec::with_capacity(bytes.len() + 1);
+        result.push(0x00);
+        result.extend(bytes);
         lder_to_generic(result, ASN1_BIT_STR)
     }
     pub fn lder_to_pos_int(bytes: Vec<u8>) -> Vec<u8> {
         //The bits of the first octet and bit 8 of the second octet must not all be ones.
         //The bits of the first octet and bit 8 of the second octet must not all be zero.
         //For positive numbers whose binary representation starts with a 1, a zero byte is added at the front to fulfill the sign constraint.
-        let mut result: Vec<u8> = bytes;
-
-        //trace!("Inserting 00: \n0 < 0b1000_0000 & *result.get(0).unwrap()\n{}\n*result.get(0).unwrap() as u8:\n{}", 0 < 0b1000_0000 & *result.get(0).unwrap(), *result.get(0).unwrap() as u8);
-        if (0 < 0b1000_0000 & *result.get(0).unwrap() as u8) && (127 < *result.get(0).unwrap() as u8) {
-            //TODO test more
-            result.insert(0, 0x00);
+        
+        let needs_padding = !bytes.is_empty() && (bytes[0] & 0b1000_0000 != 0) && (bytes[0] > 127);
+        
+        if needs_padding {
+            let mut result = Vec::with_capacity(bytes.len() + 1);
+            result.push(0x00);
+            result.extend(bytes);
+            lder_to_generic(result, ASN1_INT)
+        } else {
+            lder_to_generic(bytes, ASN1_INT)
         }
-        lder_to_generic(result, ASN1_INT)
     }
     pub fn lder_to_generic(bytes: Vec<u8>, asn1_type: u8) -> Vec<u8> {
         let len = bytes.len();
-        let mut result: Vec<u8> = bytes;
-        result.insert(0, len as u8);
-        if 127 < len && len <= 255 { //Note, different boundaries cmp with lder_to_gen_seq, since here the incoming items are already wrapped
-            result.insert(0, ASN1_ONE_BYTE_SIZE);
-        } else if 255 < len {
-            result.insert(0, (len >> 8) as u8);
-            result.insert(0, ASN1_TWO_BYTE_SIZE);
+        
+        // Pre-calculate header size to avoid multiple insert(0) operations
+        let header_len = if len > 255 {
+            4 // type + 0x82 + 2 bytes for length
+        } else if len > 127 {
+            3 // type + 0x81 + 1 byte for length
+        } else {
+            2 // type + length
+        };
+        
+        let mut result = Vec::with_capacity(header_len + len);
+        result.push(asn1_type);
+        
+        if len > 255 {
+            result.push(ASN1_TWO_BYTE_SIZE);
+            result.push((len >> 8) as u8);
+            result.push(len as u8);
+        } else if len > 127 {
+            result.push(ASN1_ONE_BYTE_SIZE);
+            result.push(len as u8);
+        } else {
+            result.push(len as u8);
         }
-        result.insert(0, asn1_type);
-
+        
+        result.extend(bytes);
         result
     }
     /*
@@ -3969,21 +3997,35 @@ pub mod lder {
     }
     
     pub fn lder_to_gen_seq(elements: Vec<Vec<u8>>, asn1_type: u8) -> Vec<u8> {
-        let mut result: Vec<u8> = Vec::new();
-        for item in elements.into_iter() {
+        // Calculate total size first to pre-allocate
+        let content_len: usize = elements.iter().map(|e| e.len()).sum();
+        
+        // Pre-calculate header size
+        let header_len = if content_len > 256 {
+            4 // type + 0x82 + 2 bytes for length  
+        } else if content_len > 128 {
+            3 // type + 0x81 + 1 byte for length
+        } else {
+            2 // type + length
+        };
+        
+        let mut result = Vec::with_capacity(header_len + content_len);
+        result.push(asn1_type);
+        
+        if content_len > 256 {
+            result.push(ASN1_TWO_BYTE_SIZE);
+            result.push((content_len >> 8) as u8);
+            result.push(content_len as u8);
+        } else if content_len > 128 {
+            result.push(ASN1_ONE_BYTE_SIZE);
+            result.push(content_len as u8);
+        } else {
+            result.push(content_len as u8);
+        }
+        
+        for item in elements {
             result.extend(item);
         }
-
-        result.insert(0, result.len() as u8); //
-
-        if 128 < result.len() && result.len() <= 256 { //corner cases!
-            //TODO/CHECK: we don't want the insertion for an original sum of 127, check extensions
-            result.insert(0, ASN1_ONE_BYTE_SIZE);
-        } else if 256 < result.len() { //256, since this is the resulting len _after_ the insertion above
-            result.insert(0, (result.len() - 1 >> 8) as u8);
-            result.insert(0, ASN1_TWO_BYTE_SIZE);
-        }
-        result.insert(0, asn1_type);
 
         result
     }
@@ -3995,26 +4037,32 @@ pub mod lder {
     }
 
     pub fn lder_to_time(input: String, time_type: u8) -> Vec<u8> {
-        let mut result: Vec<u8> = input.as_bytes().to_vec();
-        result.insert(0, (result.len()) as u8);
-        result.insert(0, time_type);
-
+        let content = input.as_bytes();
+        let len = content.len();
+        let mut result = Vec::with_capacity(len + 2);
+        result.push(time_type);
+        result.push(len as u8);
+        result.extend_from_slice(content);
         result
     }
 
     pub fn sct_add_len(bytes: Vec<u8>) -> Vec<u8> {
         let len = bytes.len();
-        let mut result: Vec<u8> = bytes;
-        result.insert(0, len as u8);
-        if 255 < len {
-            result.insert(0, (len >> 8) as u8);
+        let needs_padding = !bytes.is_empty() && (bytes[0] & 0b1000_0000 != 0) && (bytes[0] > 127);
+        
+        let header_size = if len > 255 { 2 } else { 1 } + if needs_padding { 1 } else { 0 };
+        let mut result = Vec::with_capacity(header_size + len);
+        
+        if needs_padding {
+            result.push(0x00);
         }
-        //result.insert(0, 0x00); //todo test
-        if (0 < 0b1000_0000 & *result.get(0).unwrap() as u8) && (127 < *result.get(0).unwrap() as u8) {
-            //TODO test
-            result.insert(0, 0x00);
+        
+        if len > 255 {
+            result.push((len >> 8) as u8);
         }
-
+        result.push(len as u8);
+        result.extend(bytes);
+        
         result
     }
 }
