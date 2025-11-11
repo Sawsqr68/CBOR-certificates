@@ -23,3 +23,5 @@ draft-ietf-cose-cbor-encoded-cert.xml
 package-lock.json
 report.xml
 !requirements.txt
+target/
+Cargo.lock

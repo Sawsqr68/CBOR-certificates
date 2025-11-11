@@ -211,6 +211,7 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "oid",
+ "once_cell",
  "regex",
  "rustls",
  "secp256k1",
