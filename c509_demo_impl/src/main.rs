@@ -13,11 +13,11 @@
 // "cargo r u www.ietf.org"
 // "cargo r u tools.ietf.org"
 //
-// To read a DER encoded X.509 from file and encode as C509, 
+// To read a DER encoded X.509 from file and encode as C509,
 // encode back to X.509 and compare the results:
 // "cargo r l <der encoded certificate>"
 //
-// To read a DER encoded X.509 from URL and encode as C509, 
+// To read a DER encoded X.509 from URL and encode as C509,
 // encode back to X.509 and compare the results:
 // "cargo r ll <URL>"
 //
@@ -32,7 +32,7 @@
 // https://lapo.it/asn1js/ decodes DER encoded ASN.1
 // https://misc.daniel-marschall.de/asn.1/oid-converter/online.php transforms between OID dot notation and DER
 //
-// Software license:  
+// Software license:
 //
 // This software may be distributed under the terms of the 3-Clause BSD License.
 //
@@ -42,11 +42,11 @@
 // *Adding functionality to convert between C509 and X.509 format
 // *A few sample certs
 // *More bugfixes
-// *Please note: the code is far from optimized, is lacking support for a number of less used extensions, and 
-// key types, and is not fully tested. Known bugs & shortcomings are: 
+// *Please note: the code is far from optimized, is lacking support for a number of less used extensions, and
+// key types, and is not fully tested. Known bugs & shortcomings are:
 //  -- A handling error of uncommon IssuerAltName format
 //  -- Not graceful error handling of unexpected string types
-// 
+//
 //
 // Version 0.3 of the code released in March 2024
 // *A combination of a bugfix version and changes which have been made between draft-02 and draft-09
@@ -88,17 +88,16 @@ use std::fs::read_to_string; //for reading host names from file
 use std::fs::File;
 //use std::io::{self, Write};
 
-use log::{trace, debug, info, warn};
 use env_logger::Env;
-
+use log::{debug, info, trace, warn};
 
 pub const SECG_EVEN: u8 = 0x02;
 pub const SECG_ODD: u8 = 0x03;
 pub const SECG_UNCOMPRESSED: u8 = 0x04;
 pub const SECG_EVEN_COMPRESSED: u8 = 0xfe;
 pub const SECG_ODD_COMPRESSED: u8 = 0xfd;
-pub const C509_TYPE_NATIVE: u8 = 0x02; 
-pub const C509_TYPE_X509_ENCODED: u8 = 0x03; 
+pub const C509_TYPE_NATIVE: u8 = 0x02;
+pub const C509_TYPE_X509_ENCODED: u8 = 0x03;
 struct Cert {
     der: Vec<u8>,
     cbor: Vec<Vec<u8>>,
@@ -115,9 +114,7 @@ pub const WRITE_C509: bool = true;
 /******************************************************************************************************/
 /******************************************************************************************************/
 fn main() {
-  
-   env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .init();
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     info!("Logger initialized!");
 
@@ -148,7 +145,7 @@ fn main() {
         std::process::exit(0);
     }
     */
-    
+
     let help_message = r#"
 No option given!
 Options are:
@@ -160,7 +157,7 @@ Options are:
  t  read URLs from file and perform ll for each URL 
 "#;
     // get a single certificate from file or a chain/bag from a tls server and parse them
-   // let first_arg = args().nth(1).expect("No option given!\nOptions are:\n\tf\tread X.509 from crt file and covert to\n\tc\tread X.509 from crt file");
+    // let first_arg = args().nth(1).expect("No option given!\nOptions are:\n\tf\tread X.509 from crt file and covert to\n\tc\tread X.509 from crt file");
     let first_arg = args().nth(1).expect(help_message);
     let second_arg = args().nth(2).expect("No file/domain name given!");
     let certs = match &first_arg[..] {
@@ -224,7 +221,6 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
             warn!("Error writing to {}, skipping", domain_name);
             Vec::new()
         }
-
     } else {
         warn!("Error opening {}, skipping", domain_name);
         Vec::new()
@@ -245,7 +241,7 @@ fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
 
     let correct_input_path = "../could_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
     let failed_input_path = "../failed_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
-    let write_path; 
+    let write_path;
 
     if reversed_cert.der == original_input {
         info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, original_input.len(), reversed_cert.der.len(), correct_input_path);
@@ -315,7 +311,7 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
     output.push(lcbor_uint(C509_TYPE_X509_ENCODED as u64));
     // serial_number
     output.push(lcbor_bytes(serial_number));
-    
+
     // signatureAlg.
     if let Some(sig_type) = sig_map(signature_algorithm) {
         output.push(lcbor_int(sig_type));
@@ -324,7 +320,7 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
         print_warning("No C509 int regisered for signature algorithm identifier, oid", &signature_algorithm, oid);
         output.push(cbor_alg_id(signature_algorithm));
     }
-    
+
     // signature
     assert!(signature_algorithm == signature, "Expected signature_algorithm == signature!");
     // issuer
@@ -332,13 +328,12 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
     // validity
     let c_not_before = cbor_time(not_before, 0);
     let c_not_after = cbor_time(not_after, 0);
-    
+
     if c_not_after < c_not_before {
-      warn!("Pre-2000 time bug, trying to circumvent");
-      output.push(cbor_time(not_before, 1));
-      
+        warn!("Pre-2000 time bug, trying to circumvent");
+        output.push(cbor_time(not_before, 1));
     } else {
-      output.push(c_not_before);
+        output.push(c_not_before);
     }
     output.push(c_not_after);
     // subject
@@ -540,20 +535,29 @@ fn cbor_name(der_encoded_name: &[u8]) -> Vec<u8> {
 /******************************************************************************************************/
 // CBOR encode a DER encoded Time field (ruturns ~biguint)
 fn cbor_time(der_encoded_time: &[u8], pre_y2k_flag: u8) -> Vec<u8> {
-  
     let time_string = if pre_y2k_flag == 1 {
-        if der_encoded_time[0] == ASN1_UTC_TIME as u8 { [b"19", lder(der_encoded_time, ASN1_UTC_TIME)].concat() } else { lder(der_encoded_time, ASN1_GEN_TIME).to_vec() }
-    } else { //the normal case 
-        if der_encoded_time[0] == ASN1_UTC_TIME as u8 { [b"20", lder(der_encoded_time, ASN1_UTC_TIME)].concat() } else { lder(der_encoded_time, ASN1_GEN_TIME).to_vec() }
+        if der_encoded_time[0] == ASN1_UTC_TIME as u8 {
+            [b"19", lder(der_encoded_time, ASN1_UTC_TIME)].concat()
+        } else {
+            lder(der_encoded_time, ASN1_GEN_TIME).to_vec()
+        }
+    } else {
+        //the normal case
+        if der_encoded_time[0] == ASN1_UTC_TIME as u8 {
+            [b"20", lder(der_encoded_time, ASN1_UTC_TIME)].concat()
+        } else {
+            lder(der_encoded_time, ASN1_GEN_TIME).to_vec()
+        }
     };
-    
+
     let time_string = from_utf8(&time_string).unwrap();
     match time_string {
         ASN1_GEN_TIME_MAX => lcbor_simple(CBOR_NULL),
-        _ => { let dummy = lcbor_uint(chrono::NaiveDateTime::parse_from_str(time_string, "%Y%m%d%H%M%SZ").unwrap().timestamp() as u64);
-              trace!("time_string, res time: {:?}, {:?}", time_string, dummy);
-              dummy
-            },
+        _ => {
+            let dummy = lcbor_uint(chrono::NaiveDateTime::parse_from_str(time_string, "%Y%m%d%H%M%SZ").unwrap().timestamp() as u64);
+            trace!("time_string, res time: {:?}, {:?}", time_string, dummy);
+            dummy
+        }
     }
 }
 // CBOR encode a DER encoded Algorithm Identifier
@@ -1201,8 +1205,8 @@ fn print_information(certs: &[Cert]) {
         } else if certs.len() > 0 {
             print_vec("COSE_X509", &lcbor_bytes(&certs[0].der));
         } else {
-          println!("Operation failed, exiting");
-          std::process::exit(0);
+            println!("Operation failed, exiting");
+            std::process::exit(0);
         }
         // COSE_C509
         // ======================================================
@@ -2132,7 +2136,6 @@ fn parse_cbor_name<'a>(input: &'a Value, _empty_vec: &'a Vec<Value>) -> Vec<u8> 
                             _ => panic!("Unknown attribute value format'"),
                         };
                         lder_to_two_seq(oid.to_der_vec().unwrap(), lder_to_generic(value.to_vec(), tag))
-
                     }
                     _ => panic!("Unknown attribute format'"),
                 };
@@ -2157,14 +2160,14 @@ fn parse_cbor_time(input: &Value) -> (Vec<u8>, i64) {
     let mut type_flag = ASN1_UTC_TIME;
     let (formatted_date, time_val) = match input {
         Value::Integer(val) => {
-
             trace!("parse_cbor_time, incoming ts: {}", *val);
             let ts = chrono::TimeZone::timestamp(&chrono::Utc, *val as i64, 0);
             if ASN1_UTC_TIME_MAX < *val as i64 {
                 type_flag = ASN1_GEN_TIME;
                 //using four digit year format to match GEN time format
                 (ts.format("%Y%m%d%H%M%SZ").to_string(), *val)
-            } //else if (*val as i64) < ASN1_UTC_TIME_Y2K {            panic!("Unresolved pre 2000 date handling bug, aborting");            }
+            }
+            //else if (*val as i64) < ASN1_UTC_TIME_Y2K {            panic!("Unresolved pre 2000 date handling bug, aborting");            }
             else {
                 //using two digit year format to match UTC time format
                 (ts.format("%y%m%d%H%M%SZ").to_string(), *val)
@@ -2187,7 +2190,7 @@ fn parse_cbor_time(input: &Value) -> (Vec<u8>, i64) {
 pub fn parse_cbor_pub_key(pub_key: &Value, key_type: i64) -> Vec<u8> {
     //  Some(42)
 
-    let mut pub_key_vec= Vec::new();
+    let mut pub_key_vec = Vec::new();
     let mut result = Vec::new();
     match pub_key {
         Value::Bytes(pub_key_array) => {
@@ -2350,9 +2353,10 @@ fn decompress_ecc_key(pub_key_x: Vec<u8>, is_even: bool, ecc_type_id: i64) -> Ve
     //let y_inv = &mc.p-&y;
     let (_, mut yb) = y.to_bytes_be();
 
-    if yb.len() < mc.l { //TODO: currently assuming only one leading 0
+    if yb.len() < mc.l {
+        //TODO: currently assuming only one leading 0
         yb.insert(0, 0);
-    } 
+    }
     trace!("decompress_ecc_key: resulting y:\n{:02x?}", yb);
     yb
     //std::process::exit(0);
@@ -2553,10 +2557,10 @@ fn parse_cbor_extensions(input: &Value, ts_offset: i64) -> Vec<u8> {
                         Value::Bytes(raw_ext_type_oid) => {
                             let this_oid = lder_to_generic(raw_ext_type_oid.to_vec(), ASN1_OID);
                             let ext_val = match &extension_array[i + 1] {
-                            //assuming the ext.value = next item in the array is also byte encoded
-                              Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
+                                //assuming the ext.value = next item in the array is also byte encoded
+                                Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
                                 _ => panic!("Error parsing value: {:?}.", extension_array[i + 1]),
-                              };
+                            };
                             let dummy = lder_to_two_seq(this_oid, ext_val);
                             debug!("parse_cbor_extensions, EXT OF BYTE TYPE {:02x?}", dummy);
                             dummy
@@ -2605,7 +2609,7 @@ pub fn parse_cbor_sig_info(sig_alg: &Value, sig_val: &Value) -> (Vec<u8>, Vec<u8
         Value::Bytes(sig_val_bytes) => sig_val_bytes.to_vec(),
         _ => panic!("Could not parse sig val"),
     };
-    let parsed_sig_val ;
+    let parsed_sig_val;
     let mut param = Vec::new();
 
     match sig_alg {
@@ -2754,16 +2758,14 @@ pub fn parse_cbor_ecc_sig_value(sig_val_bytes: Vec<u8>) -> Vec<u8> {
     let mut result: Vec<Vec<u8>> = Vec::new();
     //let mut writer = Vec::new();
 
-
-
     let start_r_index = if sig_val_bytes[0] == 0 { 1 } else { 0 };
     let r = sig_val_bytes[start_r_index..sig_val_bytes.len() / 2].to_vec();
     trace!("parse_cbor_ecc_sig_value, restored r: {:02?}", r);
 
-    let midpoint = if sig_val_bytes[sig_val_bytes.len() / 2] == 0 { sig_val_bytes.len() / 2+1 } else { sig_val_bytes.len() / 2 };         
+    let midpoint = if sig_val_bytes[sig_val_bytes.len() / 2] == 0 { sig_val_bytes.len() / 2 + 1 } else { sig_val_bytes.len() / 2 };
     let s = sig_val_bytes[midpoint..sig_val_bytes.len()].to_vec();
     trace!("parse_cbor_ecc_sig_value, restored s: {:02?}", s);
-    
+
     result.push(lder_to_pos_int(r));
     result.push(lder_to_pos_int(s));
 
@@ -2869,7 +2871,6 @@ fn parse_cbor_general_name(extension_val: &Value) -> Vec<u8> {
                 general_name_arr.push({
                     match general_name[i] {
                         Value::Integer(gn_field) => {
-
                             match gn_field {
                                 -1 => parse_cbor_general_name_hw_module(&general_name[i + 1]),
                                 0 => {
@@ -3091,57 +3092,56 @@ fn cbor_ext_cert_policies(extension_value: &[u8], critical: bool) -> Vec<u8> {
                             panic!("Did not expect specifiers here: {:?}", specifiers);
                         }
                         let mut qualifier_info = Vec::new();
-                        for i in (0..specifiers.len()).step_by(2) { //Specifiers should come in (cps or unotice) / text string pairs, 0 to many
-                          let q_oid = {
-                              match specifiers.get(i).unwrap() {
-                                  Value::Bytes(raw_oid) => lder_to_generic(raw_oid.to_vec(), ASN1_OID),
-                                  Value::Integer(pol_id) => {
-                                      if PQ_CPS == *pol_id as i64 {
-                                          trace!("parse_cbor_ext_cert_policies, handling cps {:02x?}", PQ_CPS_OID.to_der_vec().unwrap());
-                                          text_type = ASN1_IA5_SRT;
-                                          PQ_CPS_OID.to_der_vec().unwrap()
-                                      } else if PQ_UNOTICE == *pol_id as i64 {
-                                          trace!("parse_cbor_ext_cert_policies, handling unotice {:02x?}", PQ_UNOTICE_OID.to_der_vec().unwrap());
-                                          text_type = ASN1_UTF8_STR;
-                                          PQ_UNOTICE_OID.to_der_vec().unwrap()
-                                      } else {
-                                          panic!("Can't handle policy qualifier: {:?}", pol_id);
-                                      }
-                                  }
-                                  _ => {
-                                      panic!("Could not parse {:?}", specifiers.get(0));
-                                  }
-                              }
-                          };
-                          let q_text = {
-                              match specifiers.get(i+1).unwrap() {
-                                  Value::Text(qualifier) => {
-                                      trace!("parse_cbor_ext_cert_policies, handling text {:02x?}", qualifier.as_bytes());
-                                      //unotice has one extra level of sequence wrapping...!
-                                      let t_text = lder_to_generic(qualifier.as_bytes().to_vec(), text_type);
-                                      if text_type == ASN1_UTF8_STR {
-                                        lder_to_generic(t_text, ASN1_SEQ)
-                                      } else {
-                                        t_text
-                                      }
-                                  }
-                                  _ => {
-                                      panic!("Could not parse {:?}", specifiers.get(1))
-                                  }
-                              }
-                          };
+                        for i in (0..specifiers.len()).step_by(2) {
+                            //Specifiers should come in (cps or unotice) / text string pairs, 0 to many
+                            let q_oid = {
+                                match specifiers.get(i).unwrap() {
+                                    Value::Bytes(raw_oid) => lder_to_generic(raw_oid.to_vec(), ASN1_OID),
+                                    Value::Integer(pol_id) => {
+                                        if PQ_CPS == *pol_id as i64 {
+                                            trace!("parse_cbor_ext_cert_policies, handling cps {:02x?}", PQ_CPS_OID.to_der_vec().unwrap());
+                                            text_type = ASN1_IA5_SRT;
+                                            PQ_CPS_OID.to_der_vec().unwrap()
+                                        } else if PQ_UNOTICE == *pol_id as i64 {
+                                            trace!("parse_cbor_ext_cert_policies, handling unotice {:02x?}", PQ_UNOTICE_OID.to_der_vec().unwrap());
+                                            text_type = ASN1_UTF8_STR;
+                                            PQ_UNOTICE_OID.to_der_vec().unwrap()
+                                        } else {
+                                            panic!("Can't handle policy qualifier: {:?}", pol_id);
+                                        }
+                                    }
+                                    _ => {
+                                        panic!("Could not parse {:?}", specifiers.get(0));
+                                    }
+                                }
+                            };
+                            let q_text = {
+                                match specifiers.get(i + 1).unwrap() {
+                                    Value::Text(qualifier) => {
+                                        trace!("parse_cbor_ext_cert_policies, handling text {:02x?}", qualifier.as_bytes());
+                                        //unotice has one extra level of sequence wrapping...!
+                                        let t_text = lder_to_generic(qualifier.as_bytes().to_vec(), text_type);
+                                        if text_type == ASN1_UTF8_STR {
+                                            lder_to_generic(t_text, ASN1_SEQ)
+                                        } else {
+                                            t_text
+                                        }
+                                    }
+                                    _ => {
+                                        panic!("Could not parse {:?}", specifiers.get(1))
+                                    }
+                                }
+                            };
+                            //policy_info.push(lder_to_generic(lder_to_two_seq(q_oid, q_text), ASN1_SEQ));
+                            trace!("parse_cbor_ext_cert_policies, storing next two two");
+                            qualifier_info.push(lder_to_two_seq(q_oid, q_text));
+                        } //end of specifiers loop
                           //policy_info.push(lder_to_generic(lder_to_two_seq(q_oid, q_text), ASN1_SEQ));
-                          trace!("parse_cbor_ext_cert_policies, storing next two two");
-                          qualifier_info.push(lder_to_two_seq(q_oid, q_text));
-
-                      } //end of specifiers loop
-                      //policy_info.push(lder_to_generic(lder_to_two_seq(q_oid, q_text), ASN1_SEQ));
-                      policy_info.push(lder_to_seq(qualifier_info));
-                      trace!("parse_cbor_ext_cert_policies, storing policy_info to res {:?}", policy_info);
-                      result_vec.push(lder_to_seq(policy_info)); //TODO: check empty
-                      policy_info = Vec::new();
-                      can_specify = false;
-
+                        policy_info.push(lder_to_seq(qualifier_info));
+                        trace!("parse_cbor_ext_cert_policies, storing policy_info to res {:?}", policy_info);
+                        result_vec.push(lder_to_seq(policy_info)); //TODO: check empty
+                        policy_info = Vec::new();
+                        can_specify = false;
                     }
                     _ => {
                         panic!("Could not parse {:?}", element);
@@ -3433,8 +3433,8 @@ fn parse_cbor_ext_sct_list(extension_val: &Value, critical: bool, ts_offset: i64
                         //let get = ;
                         let start_r_index = if sig_val[0] == 0 { 1 } else { 0 }; //TODO test more
                         let r = lder_to_pos_int(sig_val[start_r_index..sig_val.len() / 2].to_vec());
-                        
-                        let start_s_index = if sig_val[sig_val.len() / 2] == 0 { sig_val.len() / 2 + 1 } else { sig_val.len() / 2 }; 
+
+                        let start_s_index = if sig_val[sig_val.len() / 2] == 0 { sig_val.len() / 2 + 1 } else { sig_val.len() / 2 };
                         let s_r = sig_val[start_s_index..sig_val.len()].to_vec();
                         let s = lder_to_pos_int(s_r.clone());
 
@@ -3452,7 +3452,6 @@ fn parse_cbor_ext_sct_list(extension_val: &Value, critical: bool, ts_offset: i64
             }
             ext_val_arr.insert(total_tally, 0x00); //the size field for the last 4-touple
             ext_val_arr.insert(total_tally + 1, sct_size as u8);
-
         }
         _ => panic!("Error parsing value: {:?}.", extension_val),
     };
@@ -3581,7 +3580,7 @@ fn parse_cbor_ext_ip_resources(extension_val: &Value, critical: bool) -> Vec<u8>
     if critical {
         oid.extend(ASN1_X509_CRITICAL.to_vec());
     }
-    let  ext_val_arr = match extension_val {
+    let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
         _ => panic!("Error parsing value: {:?}.", extension_val),
     };
@@ -3595,7 +3594,7 @@ fn parse_cbor_ext_as_resources(extension_val: &Value, critical: bool) -> Vec<u8>
     if critical {
         oid.extend(ASN1_X509_CRITICAL.to_vec());
     }
-    let  ext_val_arr = match extension_val {
+    let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
         _ => panic!("Error parsing value: {:?}.", extension_val),
     };
@@ -3609,7 +3608,7 @@ fn parse_cbor_ext_ip_resources_v2(extension_val: &Value, critical: bool) -> Vec<
     if critical {
         oid.extend(ASN1_X509_CRITICAL.to_vec());
     }
-    let  ext_val_arr = match extension_val {
+    let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
         _ => panic!("Error parsing value: {:?}.", extension_val),
     };
@@ -3623,7 +3622,7 @@ fn parse_cbor_ext_as_resources_v2(extension_val: &Value, critical: bool) -> Vec<
     if critical {
         oid.extend(ASN1_X509_CRITICAL.to_vec());
     }
-    let  ext_val_arr = match extension_val {
+    let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
         _ => panic!("Error parsing value: {:?}.", extension_val),
     };
@@ -3637,7 +3636,7 @@ fn parse_cbor_ext_biometric_info(extension_val: &Value, critical: bool) -> Vec<u
     if critical {
         oid.extend(ASN1_X509_CRITICAL.to_vec());
     }
-    let  ext_val_arr = match extension_val {
+    let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
         _ => panic!("Error parsing value: {:?}.", extension_val),
     };
@@ -3651,7 +3650,7 @@ fn parse_cbor_ext_precert_signing_cert(extension_val: &Value, critical: bool) ->
     if critical {
         oid.extend(ASN1_X509_CRITICAL.to_vec());
     }
-    let  ext_val_arr = match extension_val {
+    let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
         _ => panic!("Error parsing value: {:?}.", extension_val),
     };
@@ -3665,7 +3664,7 @@ fn parse_cbor_ext_ocsp_no_check(extension_val: &Value, critical: bool) -> Vec<u8
     if critical {
         oid.extend(ASN1_X509_CRITICAL.to_vec());
     }
-    let  ext_val_arr = match extension_val {
+    let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
         _ => panic!("Error parsing value: {:?}.", extension_val),
     };
@@ -3679,7 +3678,7 @@ fn parse_cbor_ext_qualified_cert_statements(extension_val: &Value, critical: boo
     if critical {
         oid.extend(ASN1_X509_CRITICAL.to_vec());
     }
-    let  ext_val_arr = match extension_val {
+    let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
         _ => panic!("Error parsing value: {:?}.", extension_val),
     };
@@ -3693,7 +3692,7 @@ fn parse_cbor_ext_s_mime_capabilities(extension_val: &Value, critical: bool) -> 
     if critical {
         oid.extend(ASN1_X509_CRITICAL.to_vec());
     }
-    let  ext_val_arr = match extension_val {
+    let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
         _ => panic!("Error parsing value: {:?}.", extension_val),
     };
@@ -3703,14 +3702,14 @@ fn parse_cbor_ext_s_mime_capabilities(extension_val: &Value, critical: bool) -> 
 //***************************************************************************************************************************************
 //***************************************************************************************************************************************
 /*
- EXT_TLS_FEATURES = 41
- */
+EXT_TLS_FEATURES = 41
+*/
 fn parse_cbor_ext_tls_features(extension_val: &Value, critical: bool) -> Vec<u8> {
     let mut oid = EXT_TLS_FEATURES_OID.to_der_vec().unwrap();
     if critical {
         oid.extend(ASN1_X509_CRITICAL.to_vec());
     }
-    let  ext_val_arr = match extension_val {
+    let ext_val_arr = match extension_val {
         //Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
         Value::Bytes(raw_val) => raw_val.to_vec(), //TODO: check if always oct-wrapped
         _ => panic!("Error parsing value: {:?}.", extension_val),
@@ -3831,7 +3830,7 @@ pub mod help {
 // DER parsing & encoding functions
 // =========================================================================================================
 pub mod lder {
-  
+
     use crate::help::*;
     // Universal ASN1 tags
     pub const ASN1_BOOL: u8 = 0x01;
@@ -3845,7 +3844,7 @@ pub mod lder {
     pub const ASN1_UTC_TIME: u8 = 0x17;
     pub const ASN1_UTC_TIME_MAX: i64 = 2524607999; // Friday 31 December 2049 23:59:59
     pub const ASN1_UTC_TIME_Y2K: i64 = 946684799; // 31 December 1999 23:59:59
-                                      
+
     pub const ASN1_GEN_TIME: u8 = 0x18;
     pub const ASN1_SEQ: u8 = 0x30;
     pub const ASN1_SET: u8 = 0x31;
@@ -3859,7 +3858,7 @@ pub mod lder {
     pub const ASN1_INDEX_TWO_EXT: u8 = 0x82; //Clarify
     pub const ASN1_URL: u8 = 0x86; //Clarify
     pub const ASN1_IP: u8 = 0x87; //TODO: Clarify
-    
+
     pub const ASN1_ONE_BYTE_SIZE: u8 = 0x81;
     pub const ASN1_TWO_BYTE_SIZE: u8 = 0x82;
 
@@ -3942,7 +3941,8 @@ pub mod lder {
         let len = bytes.len();
         let mut result: Vec<u8> = bytes;
         result.insert(0, len as u8);
-        if 127 < len && len <= 255 { //Note, different boundaries cmp with lder_to_gen_seq, since here the incoming items are already wrapped
+        if 127 < len && len <= 255 {
+            //Note, different boundaries cmp with lder_to_gen_seq, since here the incoming items are already wrapped
             result.insert(0, ASN1_ONE_BYTE_SIZE);
         } else if 255 < len {
             result.insert(0, (len >> 8) as u8);
@@ -3967,7 +3967,7 @@ pub mod lder {
     pub fn lder_to_seq(elements: Vec<Vec<u8>>) -> Vec<u8> {
         lder_to_gen_seq(elements, ASN1_SEQ)
     }
-    
+
     pub fn lder_to_gen_seq(elements: Vec<Vec<u8>>, asn1_type: u8) -> Vec<u8> {
         let mut result: Vec<u8> = Vec::new();
         for item in elements.into_iter() {
@@ -3976,10 +3976,12 @@ pub mod lder {
 
         result.insert(0, result.len() as u8); //
 
-        if 128 < result.len() && result.len() <= 256 { //corner cases!
+        if 128 < result.len() && result.len() <= 256 {
+            //corner cases!
             //TODO/CHECK: we don't want the insertion for an original sum of 127, check extensions
             result.insert(0, ASN1_ONE_BYTE_SIZE);
-        } else if 256 < result.len() { //256, since this is the resulting len _after_ the insertion above
+        } else if 256 < result.len() {
+            //256, since this is the resulting len _after_ the insertion above
             result.insert(0, (result.len() - 1 >> 8) as u8);
             result.insert(0, ASN1_TWO_BYTE_SIZE);
         }
