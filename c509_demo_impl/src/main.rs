@@ -208,15 +208,15 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
 
         if let Ok(_) = tls.write_all(b"GET / HTTP/1.1") {
             tls.flush().unwrap();
-            let mut ugly_counter = 0;
+            let mut certificate_counter = 0;
             tls.sess
                 .get_peer_certificates()
                 .unwrap()
                 .iter()
                 .map(|c| {
                     loop_on_x509_cert(c.0.clone(), domain_name.as_str(), no, {
-                        ugly_counter += 1;
-                        ugly_counter
+                        certificate_counter += 1;
+                        certificate_counter
                     })
                 })
                 .collect()
@@ -234,8 +234,8 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
 /******************************************************************************************************/
 // Parse a DER encoded X509 and encode it as C509, re-encode back to X.509 and check if successful
 fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
-    let oi = input.clone();
-    let ooi = input.clone();
+    let original_input = input.clone();
+    let original_input_copy = input.clone();
     let parsed_cert = parse_x509_cert(input);
     let reversed_cert = parse_c509_cert(lcbor_array(&parsed_cert.cbor), false);
     //let rev_copy = reversed_cert.der.clone();
@@ -247,12 +247,12 @@ fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
     let failed_input_path = "../failed_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
     let write_path; 
 
-    if reversed_cert.der == oi {
-        info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), correct_input_path);
+    if reversed_cert.der == original_input {
+        info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, original_input.len(), reversed_cert.der.len(), correct_input_path);
         write_path = &correct_input_path;
     } else {
         print_str_warning("File re-encoding failure");
-        warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), failed_input_path);
+        warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, original_input.len(), reversed_cert.der.len(), failed_input_path);
         write_path = &failed_input_path;
     }
     let write_input_path = write_path.to_owned() + ".input.hex";
@@ -260,13 +260,13 @@ fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
     let mut input_file = File::create(write_input_path).expect("File not found");
     let mut output_file = File::create(write_output_path).expect("File not found");
 
-    for byte in oi {
+    for byte in original_input {
         let _ = write!(input_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
     for byte in reversed_cert.der {
         let _ = write!(output_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
-    Cert { der: ooi, cbor: Vec::new() }
+    Cert { der: original_input_copy, cbor: Vec::new() }
 }
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -295,20 +295,20 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
     let mut output = Vec::new();
     // der Certificate
     let certificate = lder_vec_len(&input, ASN1_SEQ, 3);
-    let tbs_certificate = lder_vec_len(certificate[0], ASN1_SEQ, 8);
-    let version = lder(tbs_certificate[0], 0xa0);
-    let serial_number = lder_uint(tbs_certificate[1]);
+    let to_be_signed_cert = lder_vec_len(certificate[0], ASN1_SEQ, 8);
+    let version = lder(to_be_signed_cert[0], 0xa0);
+    let serial_number = lder_uint(to_be_signed_cert[1]);
     let signature_algorithm = certificate[1];
-    let signature = tbs_certificate[2];
-    let issuer = tbs_certificate[3];
-    let validity = lder_vec_len(tbs_certificate[4], ASN1_SEQ, 2);
+    let signature = to_be_signed_cert[2];
+    let issuer = to_be_signed_cert[3];
+    let validity = lder_vec_len(to_be_signed_cert[4], ASN1_SEQ, 2);
     let not_before = validity[0];
     let not_after = validity[1];
-    let subject = tbs_certificate[5];
-    let subject_public_key_info = lder_vec_len(tbs_certificate[6], ASN1_SEQ, 2);
+    let subject = to_be_signed_cert[5];
+    let subject_public_key_info = lder_vec_len(to_be_signed_cert[6], ASN1_SEQ, 2);
     let spki_algorithm = subject_public_key_info[0]; //TODO, update?
     let subject_public_key = lder(subject_public_key_info[1], ASN1_BIT_STR);
-    let extensions = lder_vec(lder(tbs_certificate[7], 0xa3), ASN1_SEQ); //0xa3 = [3] EXPLICIT, mandatory start of ext.seq if present
+    let extensions = lder_vec(lder(to_be_signed_cert[7], 0xa3), ASN1_SEQ); //0xa3 = [3] EXPLICIT, mandatory start of ext.seq if present
     let signature_value = lder(certificate[2], ASN1_BIT_STR);
     // version
     assert!(lder(version, ASN1_INT)[0] == 2, "Expected v3!");
@@ -478,8 +478,8 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
 }
 /******************************************************************************************************/
 // CBOR encode a DER encoded Name field
-fn cbor_name(b: &[u8]) -> Vec<u8> {
-    let name = lder_vec(b, ASN1_SEQ);
+fn cbor_name(der_encoded_name: &[u8]) -> Vec<u8> {
+    let name = lder_vec(der_encoded_name, ASN1_SEQ);
     let mut vec = Vec::new();
     for rdn in &name {
         let attributes = lder_vec_len(rdn, ASN1_SET, 1);
@@ -539,12 +539,12 @@ fn cbor_name(b: &[u8]) -> Vec<u8> {
 }
 /******************************************************************************************************/
 // CBOR encode a DER encoded Time field (ruturns ~biguint)
-fn cbor_time(b: &[u8], pre_y2k_flag: u8) -> Vec<u8> {
+fn cbor_time(der_encoded_time: &[u8], pre_y2k_flag: u8) -> Vec<u8> {
   
     let time_string = if pre_y2k_flag == 1 {
-        if b[0] == ASN1_UTC_TIME as u8 { [b"19", lder(b, ASN1_UTC_TIME)].concat() } else { lder(b, ASN1_GEN_TIME).to_vec() }
+        if der_encoded_time[0] == ASN1_UTC_TIME as u8 { [b"19", lder(der_encoded_time, ASN1_UTC_TIME)].concat() } else { lder(der_encoded_time, ASN1_GEN_TIME).to_vec() }
     } else { //the normal case 
-        if b[0] == ASN1_UTC_TIME as u8 { [b"20", lder(b, ASN1_UTC_TIME)].concat() } else { lder(b, ASN1_GEN_TIME).to_vec() }
+        if der_encoded_time[0] == ASN1_UTC_TIME as u8 { [b"20", lder(der_encoded_time, ASN1_UTC_TIME)].concat() } else { lder(der_encoded_time, ASN1_GEN_TIME).to_vec() }
     };
     
     let time_string = from_utf8(&time_string).unwrap();
@@ -557,8 +557,8 @@ fn cbor_time(b: &[u8], pre_y2k_flag: u8) -> Vec<u8> {
     }
 }
 // CBOR encode a DER encoded Algorithm Identifier
-fn cbor_alg_id(b: &[u8]) -> Vec<u8> {
-    let ai = lder_vec(b, ASN1_SEQ);
+fn cbor_alg_id(der_encoded_alg: &[u8]) -> Vec<u8> {
+    let ai = lder_vec(der_encoded_alg, ASN1_SEQ);
     assert!(ai.len() < 3, "Expected length 1 or 2");
     let oid = lcbor_bytes(lder(ai[0], ASN1_OID));
     if ai.len() == 1 {
@@ -569,8 +569,8 @@ fn cbor_alg_id(b: &[u8]) -> Vec<u8> {
     }
 }
 // CBOR encodes a DER encoded ECDSA signature value
-fn cbor_ecdsa(b: &[u8]) -> Vec<u8> {
-    let signature_seq = lder_vec(b, ASN1_SEQ);
+fn cbor_ecdsa(der_encoded_sig: &[u8]) -> Vec<u8> {
+    let signature_seq = lder_vec(der_encoded_sig, ASN1_SEQ);
     let r = lder_uint(signature_seq[0]).to_vec();
     let s = lder_uint(signature_seq[1]).to_vec();
     let max = std::cmp::max(r.len(), s.len());
@@ -590,9 +590,9 @@ Below is a list of encoding functions for the supported extensions listed in C50
 /*
   Placeholder function to store the raw extension value as bytes
 */
-fn cbor_store_only(b: &[u8], v: &[u8], oid: &[u8]) -> Vec<u8> {
-    print_warning("Warning, currently storing raw data for extension with oid", v, oid);
-    lcbor_bytes(b)
+fn cbor_store_only(extension_value: &[u8], full_extension: &[u8], oid: &[u8]) -> Vec<u8> {
+    print_warning("Warning, currently storing raw data for extension with oid", full_extension, oid);
+    lcbor_bytes(extension_value)
 }
 /*
 CBOR encode GeneralNames
@@ -601,9 +601,9 @@ EXT_SUBJECT_ALT_NAME
 Authority Key Identifier extension
 Note: no wrapping array if content is a single name of type opt
 */
-fn cbor_general_names(b: &[u8], t: u8, opt: u8) -> Vec<u8> {
+fn cbor_general_names(der_encoded_names: &[u8], asn1_type: u8, opt: u8) -> Vec<u8> {
     let unwrap = opt;
-    let names = lder_vec(b, t);
+    let names = lder_vec(der_encoded_names, asn1_type);
     let mut vec = Vec::new();
     for name in names {
         //println!("handling name: {:02x?}", name);
@@ -860,12 +860,12 @@ KeyIdentifierArray = [
 ]
 AuthorityKeyIdentifier = KeyIdentifierArray / KeyIdentifier
 */
-fn cbor_ext_auth_key_id(b: &[u8]) -> Vec<u8> {
-    let aki = lder_vec(b, ASN1_SEQ);
-    let ki = lcbor_bytes(lder(aki[0], 0x80));
-    match aki.len() {
-        1 => ki,
-        3 => lcbor_array(&[ki, cbor_general_names(aki[1], 0xa1, 0xff), lcbor_bytes(lder(aki[2], 0x82))]),
+fn cbor_ext_auth_key_id(der_encoded_key_id: &[u8]) -> Vec<u8> {
+    let authority_key_id = lder_vec(der_encoded_key_id, ASN1_SEQ);
+    let key_identifier = lcbor_bytes(lder(authority_key_id[0], 0x80));
+    match authority_key_id.len() {
+        1 => key_identifier,
+        3 => lcbor_array(&[key_identifier, cbor_general_names(authority_key_id[1], 0xa1, 0xff), lcbor_bytes(lder(authority_key_id[2], 0x82))]),
         _ => panic!("Error parsing auth key id"),
     }
 }
@@ -879,18 +879,18 @@ is present then extensionValue = pathLenConstraint.
 CDDL
  BasicConstraints = int
 */
-fn cbor_ext_bas_con(b: &[u8]) -> Vec<u8> {
-    let bc = lder_vec(b, ASN1_SEQ);
-    //println!("match bc.len(): {}", bc.len());
-    match bc.len() {
+fn cbor_ext_bas_con(der_encoded_constraints: &[u8]) -> Vec<u8> {
+    let basic_constraints = lder_vec(der_encoded_constraints, ASN1_SEQ);
+    //println!("match basic_constraints.len(): {}", basic_constraints.len());
+    match basic_constraints.len() {
         0 => lcbor_int(-2),
         1 => {
-            assert!(lder(bc[0], ASN1_BOOL) == [0xff], "Expected cA == true");
+            assert!(lder(basic_constraints[0], ASN1_BOOL) == [0xff], "Expected cA == true");
             lcbor_int(-1)
         }
         2 => {
-            assert!(lder(bc[0], ASN1_BOOL) == [0xff], "Expected cA == true");
-            let path_len = lder_uint(bc[1]);
+            assert!(lder(basic_constraints[0], ASN1_BOOL) == [0xff], "Expected cA == true");
+            let path_len = lder_uint(basic_constraints[1]);
             assert!(path_len.len() == 1, "Expected path length < 256");
             lcbor_uint(path_len[0] as u64)
         }
@@ -998,14 +998,14 @@ fn cbor_ext_crl_dist(b: &[u8]) -> Vec<u8> {
 }
 /******************************************************************************************************/
 // CBOR encodes a extended key usage extension
-fn cbor_ext_eku(b: &[u8]) -> Vec<u8> {
+fn cbor_ext_eku(der_encoded_eku: &[u8]) -> Vec<u8> {
     let mut vec = Vec::new();
-    for eku in lder_vec(b, ASN1_SEQ) {
-        let oid = lder(eku, ASN1_OID);
+    for extended_key_usage in lder_vec(der_encoded_eku, ASN1_SEQ) {
+        let oid = lder(extended_key_usage, ASN1_OID);
         if let Some(eku_type) = eku_map(oid) {
             vec.push(lcbor_uint(eku_type));
         } else {
-            print_warning("No C509 int registered for EKU OID", eku, oid);
+            print_warning("No C509 int registered for EKU OID", extended_key_usage, oid);
             vec.push(lcbor_bytes(oid));
         }
     }
@@ -3051,7 +3051,7 @@ Qualifier ::= CHOICE {
   userNotice   UserNotice }
    CPSuri ::= IA5String
 */
-fn parse_cbor_ext_cert_policies(extension_val: &Value, critical: bool) -> Vec<u8> {
+fn cbor_ext_cert_policies(extension_value: &[u8], critical: bool) -> Vec<u8> {
     let mut result_vec = Vec::new();
     let mut oid = EXT_CERT_POLICIES_OID.to_der_vec().unwrap();
     if critical {
@@ -3060,29 +3060,29 @@ fn parse_cbor_ext_cert_policies(extension_val: &Value, critical: bool) -> Vec<u8
     let mut can_specify = false;
     let mut text_type = ASN1_UTC_TIME; //must be overwritten
 
-    match extension_val {
+    match extension_value {
         Value::Array(elements) => {
-            let mut wip = Vec::new();
+            let mut policy_info = Vec::new();
             for element in elements {
                 match element {
                     Value::Integer(pol_id) => {
                         if can_specify {
                             //prev oid didn't use any qualifier, and should be stored now
-                            result_vec.push(lder_to_seq(wip));
-                            wip = Vec::new();
+                            result_vec.push(lder_to_seq(policy_info));
+                            policy_info = Vec::new();
                         }
                         //result_vec.push(lder_to_generic(lder_to_generic(lder_to_generic(lder_to_generic(url_string.as_bytes().to_vec(), ASN1_INDEX_SIX_EXT),ASN1_INDEX_ZERO),ASN1_INDEX_ZERO),ASN1_SEQ));
                         trace!("parse_cbor_ext_cert_policies, FOUND pol id: {:02x?}", map_cert_policy_id_to_oid(*pol_id as i64));
-                        wip.push(map_cert_policy_id_to_oid(*pol_id as i64));
+                        policy_info.push(map_cert_policy_id_to_oid(*pol_id as i64));
                         can_specify = true;
                     }
                     Value::Bytes(raw_oid) => {
                         if can_specify {
                             //prev oid didn't use any qualifier, and should be stored now
-                            result_vec.push(lder_to_seq(wip));
-                            wip = Vec::new();
+                            result_vec.push(lder_to_seq(policy_info));
+                            policy_info = Vec::new();
                         }
-                        wip.push(lder_to_generic(raw_oid.to_vec(), ASN1_OID));
+                        policy_info.push(lder_to_generic(raw_oid.to_vec(), ASN1_OID));
                         trace!("parse_cbor_ext_cert_policies, handling raw bytes");
                         can_specify = true;
                     }
@@ -3090,7 +3090,7 @@ fn parse_cbor_ext_cert_policies(extension_val: &Value, critical: bool) -> Vec<u8
                         if !can_specify {
                             panic!("Did not expect specifiers here: {:?}", specifiers);
                         }
-                        let mut wip_internal = Vec::new();
+                        let mut qualifier_info = Vec::new();
                         for i in (0..specifiers.len()).step_by(2) { //Specifiers should come in (cps or unotice) / text string pairs, 0 to many
                           let q_oid = {
                               match specifiers.get(i).unwrap() {
@@ -3130,16 +3130,16 @@ fn parse_cbor_ext_cert_policies(extension_val: &Value, critical: bool) -> Vec<u8
                                   }
                               }
                           };
-                          //wip.push(lder_to_generic(lder_to_two_seq(q_oid, q_text), ASN1_SEQ));
+                          //policy_info.push(lder_to_generic(lder_to_two_seq(q_oid, q_text), ASN1_SEQ));
                           trace!("parse_cbor_ext_cert_policies, storing next two two");
-                          wip_internal.push(lder_to_two_seq(q_oid, q_text));
+                          qualifier_info.push(lder_to_two_seq(q_oid, q_text));
 
                       } //end of specifiers loop
-                      //wip.push(lder_to_generic(lder_to_two_seq(q_oid, q_text), ASN1_SEQ));
-                      wip.push(lder_to_seq(wip_internal));
-                      trace!("parse_cbor_ext_cert_policies, storing WIP to res {:?}", wip);
-                      result_vec.push(lder_to_seq(wip)); //TODO: check empty
-                      wip = Vec::new();
+                      //policy_info.push(lder_to_generic(lder_to_two_seq(q_oid, q_text), ASN1_SEQ));
+                      policy_info.push(lder_to_seq(qualifier_info));
+                      trace!("parse_cbor_ext_cert_policies, storing policy_info to res {:?}", policy_info);
+                      result_vec.push(lder_to_seq(policy_info)); //TODO: check empty
+                      policy_info = Vec::new();
                       can_specify = false;
 
                     }
@@ -3150,10 +3150,10 @@ fn parse_cbor_ext_cert_policies(extension_val: &Value, critical: bool) -> Vec<u8
             } //end of big for loop
             if can_specify {
                 //last oid didn't use any qualifier, and should be stored now
-                result_vec.push(lder_to_seq(wip));
+                result_vec.push(lder_to_seq(policy_info));
             }
         }
-        _ => panic!("Error parsing value: {:?}.", extension_val),
+        _ => panic!("Error parsing value: {:?}.", extension_value),
     };
     lder_to_two_seq(oid, lder_to_generic(lder_to_seq(result_vec), ASN1_OCTET_STR))
 }
@@ -3305,17 +3305,17 @@ fn parse_cbor_ext_auth_info(extension_val: &Value, critical: bool) -> Vec<u8> {
     }
     match extension_val {
         Value::Array(elements) => {
-            let mut wip = Vec::new();
+            let mut access_description = Vec::new();
             trace!("parse_cbor_ext_auth_info, handle {} and {}", elements.len(), elements.len() % 2);
             assert!(0 == (elements.len() % 2), "The AuthorityInfoAccessSyntax array must be of even length");
             for i in (0..elements.len()).step_by(2) {
                 match elements.get(i).unwrap() {
                     Value::Integer(access_method) => {
                         //trace!("parse_cbor_ext_auth_info, access_method: {:02x?}", map_auth_info_id_to_oid(*access_method as i64));
-                        wip.push(map_auth_info_id_to_oid(*access_method as i64));
+                        access_description.push(map_auth_info_id_to_oid(*access_method as i64));
                     }
                     Value::Bytes(raw_oid) => {
-                        wip.push(lder_to_generic(raw_oid.to_vec(), ASN1_OID));
+                        access_description.push(lder_to_generic(raw_oid.to_vec(), ASN1_OID));
                         trace!("parse_cbor_ext_auth_info, handle raw bytes");
                     }
                     _ => {
@@ -3325,14 +3325,14 @@ fn parse_cbor_ext_auth_info(extension_val: &Value, critical: bool) -> Vec<u8> {
                 match elements.get(i + 1).unwrap() {
                     Value::Text(qualifier) => {
                         trace!("parse_cbor_ext_auth_info, handle text {:02x?}", qualifier.as_bytes());
-                        wip.push(lder_to_generic(qualifier.as_bytes().to_vec(), ASN1_URL));
+                        access_description.push(lder_to_generic(qualifier.as_bytes().to_vec(), ASN1_URL));
                     }
                     _ => {
                         panic!("Could not parse {:?}", elements.get(i + 1))
                     }
                 }
-                result_vec.push(lder_to_seq(wip));
-                wip = Vec::new();
+                result_vec.push(lder_to_seq(access_description));
+                access_description = Vec::new();
             }
         }
         _ => {
@@ -3759,10 +3759,10 @@ pub mod help {
     use serde_cbor::Value;
     use std::io::Write;
     // Convert a byte string to u64 uint
-    pub fn be_bytes_to_u64(b: &[u8]) -> u64 {
-        let l = b.len();
-        assert!(l > 0 && l < 9, "Unexpected length");
-        (0..l).into_iter().map(|i| (b[i] as u64) << (8 * (l - i - 1))).sum()
+    pub fn be_bytes_to_u64(bytes: &[u8]) -> u64 {
+        let len = bytes.len();
+        assert!(len > 0 && len < 9, "Unexpected length");
+        (0..len).into_iter().map(|i| (bytes[i] as u64) << (8 * (len - i - 1))).sum()
     }
     // Brotli compression
     pub fn brotli(input: &[u8]) -> Vec<u8> {
@@ -3771,33 +3771,33 @@ pub mod help {
         writer.into_inner()
     }
     // Print a vec to cout
-    fn print_internal(s: &str, v: &[u8], is_error: bool) {
-        let heading = format!("{} ({} bytes)", s, v.len());
+    fn print_internal(label: &str, data: &[u8], is_error: bool) {
+        let heading = format!("{} ({} bytes)", label, data.len());
         if is_error {
             print!("{}", heading.red());
         } else {
             print!("{}", heading.yellow());
         }
-        for (i, byte) in v.iter().enumerate() {
+        for (i, byte) in data.iter().enumerate() {
             print!("{}{:02X}", if i % 23 == 0 { "\n" } else { " " }, byte);
         }
         println!("\n");
     }
     // Print an error to cout (red and white)
-    pub fn print_vec(s: &str, v: &[u8]) {
-        print_internal(s, v, false);
+    pub fn print_vec(label: &str, data: &[u8]) {
+        print_internal(label, data, false);
     }
     // Print a warning to cout
-    pub fn print_str_warning(s: &str) {
-        let heading = format!("{}", s);
+    pub fn print_str_warning(message: &str) {
+        let heading = format!("{}", message);
         println!("{}", heading.red());
     }
 
     // Print an error to cout (red and white)
-    pub fn print_warning(s: &str, v: &[u8], oid: &[u8]) {
+    pub fn print_warning(message: &str, data: &[u8], oid: &[u8]) {
         let oid_str: String = ObjectIdentifier::try_from(oid).unwrap().into();
-        let text = format!("{} ({})", s, oid_str);
-        print_internal(&text, v, true);
+        let text = format!("{} ({})", message, oid_str);
+        print_internal(&text, data, true);
     }
     // Print info to cout (green)
     pub fn print_info(rows: &[String]) {
@@ -3809,10 +3809,10 @@ pub mod help {
         println!();
     }
 
-    pub fn usize_to_u8_vec(x: usize) -> Vec<u8> {
+    pub fn usize_to_u8_vec(value: usize) -> Vec<u8> {
         let mut result = Vec::new();
         for i in 0..std::mem::size_of::<usize>() {
-            let byte = ((x >> (i * 8)) & 0xff) as u8;
+            let byte = ((value >> (i * 8)) & 0xff) as u8;
             result.push(byte);
         }
         while let Some(&0) = result.first() {
@@ -3875,25 +3875,25 @@ pub mod lder {
     pub const SCT_EXT_AID: &[u8] = &[0x00, 0x00, 0x04, 0x03];
 
     // Parse a DER encoded type and returns the value as a byte string
-    pub fn lder(b: &[u8], tag: u8) -> &[u8] {
-        assert!(b[0] == tag, "Unexpected type! Expected {:x} but got {:x}", tag, b[0]);
-        let (value, none) = lder_split(b, true);
+    pub fn lder(der_encoded: &[u8], tag: u8) -> &[u8] {
+        assert!(der_encoded[0] == tag, "Unexpected type! Expected {:x} but got {:x}", tag, der_encoded[0]);
+        let (value, none) = lder_split(der_encoded, true);
         assert!(none.is_empty(), "Expected empty slice!");
         value
     }
     // Parse a DER encoded uint and removes the first zero byte
-    pub fn lder_uint(b: &[u8]) -> &[u8] {
-        let value = lder(b, ASN1_INT);
+    pub fn lder_uint(der_encoded: &[u8]) -> &[u8] {
+        let value = lder(der_encoded, ASN1_INT);
         if value.len() > 1 && value[0] == 0 {
             return &value[1..];
         }
         value
     }
     // Parse a DER encoded sequence/set type and returns the elements as a vector
-    pub fn lder_vec(b: &[u8], tag: u8) -> Vec<&[u8]> {
+    pub fn lder_vec(der_encoded: &[u8], tag: u8) -> Vec<&[u8]> {
         let mut vec = Vec::new();
 
-        let mut rest = lder(b, tag);
+        let mut rest = lder(der_encoded, tag);
         while !rest.is_empty() {
             let (tlv, temp) = lder_split(rest, false);
             vec.push(tlv);
@@ -3902,23 +3902,23 @@ pub mod lder {
         vec
     }
     // Parse a DER encoded sequence/set with a known expected length
-    pub fn lder_vec_len(b: &[u8], tag: u8, length: usize) -> Vec<&[u8]> {
-        let vec = lder_vec(b, tag);
+    pub fn lder_vec_len(der_encoded: &[u8], tag: u8, length: usize) -> Vec<&[u8]> {
+        let vec = lder_vec(der_encoded, tag);
         assert!(vec.len() == length, "DER encoded sequence/set has invalid length!");
         vec
     }
     // Parse a sequence of DER encoded types and returns a tuple
     // The tuple contains (first type, rest of sequence/set)
-    pub fn lder_split(b: &[u8], value_only: bool) -> (&[u8], &[u8]) {
-        assert!(b[1] < 0x84, "Did not expected length >= 2^24");
-        let (start, end) = match b[1] {
+    pub fn lder_split(der_encoded: &[u8], value_only: bool) -> (&[u8], &[u8]) {
+        assert!(der_encoded[1] < 0x84, "Did not expected length >= 2^24");
+        let (start, end) = match der_encoded[1] {
             0x80 => panic!("Indefinite length encoding!"),
-            0x81 => (3, 3 + b[2] as usize),
-            0x82 => (4, 4 + be_bytes_to_u64(&b[2..4]) as usize),
-            0x83 => (5, 5 + be_bytes_to_u64(&b[2..5]) as usize),
-            _ => (2, 2 + b[1] as usize),
+            0x81 => (3, 3 + der_encoded[2] as usize),
+            0x82 => (4, 4 + be_bytes_to_u64(&der_encoded[2..4]) as usize),
+            0x83 => (5, 5 + be_bytes_to_u64(&der_encoded[2..5]) as usize),
+            _ => (2, 2 + der_encoded[1] as usize),
         };
-        (&b[value_only as usize * start..end], &b[end..])
+        (&der_encoded[value_only as usize * start..end], &der_encoded[end..])
     }
     pub fn lder_to_bit_str(bytes: Vec<u8>) -> Vec<u8> {
         let mut result: Vec<u8> = bytes;
@@ -4023,54 +4023,54 @@ pub mod lder {
 // ======================================================
 pub mod lcbor {
     // CBOR encodes an unsigned interger
-    pub fn lcbor_uint(u: u64) -> Vec<u8> {
-        lcbor_type_arg(0, u)
+    pub fn lcbor_uint(unsigned_int: u64) -> Vec<u8> {
+        lcbor_type_arg(0, unsigned_int)
     }
     // CBOR encodes an signed integer
-    pub fn lcbor_int(i: i64) -> Vec<u8> {
-        if i < 0 {
-            lcbor_type_arg(1, -i as u64 - 1)
+    pub fn lcbor_int(signed_int: i64) -> Vec<u8> {
+        if signed_int < 0 {
+            lcbor_type_arg(1, -signed_int as u64 - 1)
         } else {
-            lcbor_uint(i as u64)
+            lcbor_uint(signed_int as u64)
         }
     }
     // CBOR encodes a byte string
-    pub fn lcbor_bytes(b: &[u8]) -> Vec<u8> {
-        [&lcbor_type_arg(2, b.len() as u64), b].concat()
+    pub fn lcbor_bytes(byte_string: &[u8]) -> Vec<u8> {
+        [&lcbor_type_arg(2, byte_string.len() as u64), byte_string].concat()
     }
     // CBOR encodes a text string
-    pub fn lcbor_text(b: &[u8]) -> Vec<u8> {
-        let s = std::str::from_utf8(b).unwrap(); // check that this is valid utf8
+    pub fn lcbor_text(text_bytes: &[u8]) -> Vec<u8> {
+        let s = std::str::from_utf8(text_bytes).unwrap(); // check that this is valid utf8
         [&lcbor_type_arg(3, s.len() as u64), s.as_bytes()].concat()
     }
     // CBOR encodes an array
-    pub fn lcbor_array(v: &[Vec<u8>]) -> Vec<u8> {
-        [lcbor_type_arg(4, v.len() as u64), v.concat()].concat()
+    pub fn lcbor_array(array_elements: &[Vec<u8>]) -> Vec<u8> {
+        [lcbor_type_arg(4, array_elements.len() as u64), array_elements.concat()].concat()
     }
     pub const CBOR_FALSE: u8 = 20;
     pub const CBOR_TRUE: u8 = 21;
     pub const CBOR_NULL: u8 = 22;
     // CBOR encodes a simple value
-    pub fn lcbor_simple(u: u8) -> Vec<u8> {
-        lcbor_type_arg(7, u as u64)
+    pub fn lcbor_simple(simple_value: u8) -> Vec<u8> {
+        lcbor_type_arg(7, simple_value as u64)
     }
     // Internal CBOR encoding helper funtion
-    fn lcbor_type_arg(t: u8, u: u64) -> Vec<u8> {
-        let mut vec = vec![t << 5];
-        if u < 24 {
-            vec[0] |= u as u8;
-        } else if u < u8::MAX as u64 {
+    fn lcbor_type_arg(cbor_type: u8, argument: u64) -> Vec<u8> {
+        let mut vec = vec![cbor_type << 5];
+        if argument < 24 {
+            vec[0] |= argument as u8;
+        } else if argument < u8::MAX as u64 {
             vec[0] |= 24;
-            vec.extend(&(u as u8).to_be_bytes());
-        } else if u < u16::MAX as u64 {
+            vec.extend(&(argument as u8).to_be_bytes());
+        } else if argument < u16::MAX as u64 {
             vec[0] |= 25;
-            vec.extend(&(u as u16).to_be_bytes());
-        } else if u < u32::MAX as u64 {
+            vec.extend(&(argument as u16).to_be_bytes());
+        } else if argument < u32::MAX as u64 {
             vec[0] |= 26;
-            vec.extend(&(u as u32).to_be_bytes());
+            vec.extend(&(argument as u32).to_be_bytes());
         } else {
             vec[0] |= 27;
-            vec.extend(&u.to_be_bytes());
+            vec.extend(&argument.to_be_bytes());
         }
         vec
     }
