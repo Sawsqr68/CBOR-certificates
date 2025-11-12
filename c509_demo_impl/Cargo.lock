@@ -215,7 +215,7 @@ dependencies = [
  "rustls",
  "secp256k1",
  "serde_cbor",
- "webpki",
+ "webpki 0.22.2",
  "webpki-roots",
 ]
 
@@ -584,7 +584,7 @@ dependencies = [
  "log",
  "ring",
  "sct",
- "webpki",
+ "webpki 0.21.4",
 ]
 
 [[package]]
@@ -798,12 +798,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "webpki"
+version = "0.22.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07ecc0cd7cac091bf682ec5efa18b1cff79d617b84181f38b3951dbe135f607f"
+dependencies = [
+ "ring",
+ "untrusted",
+]
+
+[[package]]
 name = "webpki-roots"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aabe153544e473b775453675851ecc86863d2a81d786d741f6b76778f2a48940"
 dependencies = [
- "webpki",
+ "webpki 0.21.4",
 ]
 
 [[package]]
