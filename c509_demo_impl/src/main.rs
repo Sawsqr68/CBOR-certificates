@@ -86,7 +86,7 @@ use num_traits::{pow, One, Zero};
 
 use std::fs::read_to_string; //for reading host names from file
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::BufWriter;
 
 use log::{trace, debug, info, warn};
 use env_logger::Env;
