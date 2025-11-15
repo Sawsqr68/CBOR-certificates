@@ -176,43 +176,42 @@ Options are:
 }
 /******************************************************************************************************/
 /******************************************************************************************************/
-// make a TLS connection to get server certificate chain/bag
-fn get_certs_from_tls(domain_name: String) -> Vec<Cert> {
+// Helper function to establish TLS connection and get peer certificates
+fn establish_tls_connection(domain_name: &str) -> Result<Vec<rustls::Certificate>, String> {
     let mut config = rustls::ClientConfig::new();
     config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
-    let dns_name = webpki::DNSNameRef::try_from_ascii_str(&domain_name).unwrap();
+    let dns_name = webpki::DNSNameRef::try_from_ascii_str(domain_name)
+        .map_err(|_| format!("Invalid DNS name: {}", domain_name))?;
     let mut sess = rustls::ClientSession::new(&std::sync::Arc::new(config), dns_name);
-    let mut sock = std::net::TcpStream::connect(domain_name + ":443").unwrap();
+    let conn_addr = format!("{}:443", domain_name);
+    let mut sock = std::net::TcpStream::connect(&conn_addr)
+        .map_err(|e| format!("Error connecting to {}: {}", domain_name, e))?;
     let mut tls = rustls::Stream::new(&mut sess, &mut sock);
-    tls.write_all(b"GET / HTTP/1.1").unwrap();
-    tls.flush().unwrap();
-    tls.sess.get_peer_certificates().unwrap().iter().map(|c| parse_x509_cert(c.0.clone())).collect()
+    tls.write_all(b"GET / HTTP/1.1")
+        .map_err(|e| format!("Error writing to {}: {}", domain_name, e))?;
+    tls.flush()
+        .map_err(|e| format!("Error flushing {}: {}", domain_name, e))?;
+    tls.sess.get_peer_certificates()
+        .ok_or_else(|| format!("No peer certificates from {}", domain_name))
+        .map(|certs| certs.clone())
+}
+
+// make a TLS connection to get server certificate chain/bag
+fn get_certs_from_tls(domain_name: String) -> Vec<Cert> {
+    match establish_tls_connection(&domain_name) {
+        Ok(certs) => certs.iter().map(|c| parse_x509_cert(c.0.clone())).collect(),
+        Err(_) => panic!("Failed to get certificates from {}", domain_name),
+    }
 }
 /******************************************************************************************************/
 /******************************************************************************************************/
 
-// make a TLS connection to get server certificate chain/bag
+// make a TLS connection to get server certificate chain/bag and loop on them
 fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
-    let mut config = rustls::ClientConfig::new();
-    config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
-    let dns_name = webpki::DNSNameRef::try_from_ascii_str(&domain_name).unwrap();
-    let mut sess = rustls::ClientSession::new(&std::sync::Arc::new(config), dns_name);
-    let conn_addr = domain_name.to_owned() + ":443";
-
-    let sock_test = std::net::TcpStream::connect(conn_addr);
-    let mut sock: std::net::TcpStream; // = std::net::TcpStream::connect(conn_addr).unwrap();
-                                       // let mut fail_now = false;
-    if let Ok(stream) = sock_test {
-        sock = stream;
-        let mut tls = rustls::Stream::new(&mut sess, &mut sock);
-
-        if let Ok(_) = tls.write_all(b"GET / HTTP/1.1") {
-            tls.flush().unwrap();
+    match establish_tls_connection(domain_name) {
+        Ok(certs) => {
             let mut ugly_counter = 0;
-            tls.sess
-                .get_peer_certificates()
-                .unwrap()
-                .iter()
+            certs.iter()
                 .map(|c| {
                     loop_on_x509_cert(c.0.clone(), domain_name.as_str(), no, {
                         ugly_counter += 1;
@@ -220,14 +219,11 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
                     })
                 })
                 .collect()
-        } else {
-            warn!("Error writing to {}, skipping", domain_name);
+        }
+        Err(e) => {
+            warn!("{}", e);
             Vec::new()
         }
-
-    } else {
-        warn!("Error opening {}, skipping", domain_name);
-        Vec::new()
     }
 }
 /******************************************************************************************************/
@@ -2457,94 +2453,20 @@ fn parse_cbor_extensions(input: &Value, ts_offset: i64) -> Vec<u8> {
                                     debug!("parse_cbor_extensions, EXT_SCT_LIST: {:02x?}", dummy);
                                     dummy
                                 }
-                                EXT_SUBJECT_DIRECTORY_ATTR => {
-                                    let dummy = parse_cbor_ext_subject_directory_attr(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_SUBJECT_DIRECTORY_ATTR: {:02x?}", dummy);
+                                EXT_SUBJECT_DIRECTORY_ATTR | EXT_NAME_CONSTRAINTS | EXT_POLICY_MAPPINGS |
+                                EXT_POLICY_CONSTRAINTS | EXT_FRESHEST_CRL | EXT_INHIBIT_ANYPOLICY |
+                                EXT_SUBJECT_INFO_ACCESS | EXT_IP_RESOURCES | EXT_AS_RESOURCES |
+                                EXT_IP_RESOURCES_V2 | EXT_AS_RESOURCES_V2 | EXT_BIOMETRIC_INFO |
+                                EXT_PRECERT_SIGNING_CERT | EXT_OCSP_NO_CHECK | EXT_QUALIFIED_CERT_STATEMENTS |
+                                EXT_S_MIME_CAPABILITIES | EXT_TLS_FEATURES => {
+                                    let (oid, warning) = get_ext_oid_and_warning((ext_type.abs()) as u16);
+                                    let dummy = parse_cbor_ext_generic(oid, &extension_array[i + 1], *ext_type < 0, warning);
+                                    debug!("parse_cbor_extensions, ext_type {}: {:02x?}", ext_type, dummy);
                                     dummy
                                 }
                                 EXT_ISSUER_ALT_NAME => {
                                     let dummy = parse_cbor_ext_issuer_alt_name(&extension_array[i + 1], *ext_type < 0);
                                     debug!("parse_cbor_extensions, EXT_ISSUER_ALT_NAME: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_NAME_CONSTRAINTS => {
-                                    let dummy = parse_cbor_ext_name_constraints(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_NAME_CONSTRAINTS: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_POLICY_MAPPINGS => {
-                                    let dummy = parse_cbor_ext_policy_mappings(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_POLICY_MAPPINGS: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_POLICY_CONSTRAINTS => {
-                                    let dummy = parse_cbor_ext_policy_constraints(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_POLICY_CONSTRAINTS: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_FRESHEST_CRL => {
-                                    let dummy = parse_cbor_ext_freshest_crl(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_FRESHEST_CRL: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_INHIBIT_ANYPOLICY => {
-                                    let dummy = parse_cbor_ext_inhibit_anypolicy(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_INHIBIT_ANYPOLICY: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_SUBJECT_INFO_ACCESS => {
-                                    let dummy = parse_cbor_ext_subject_info_access(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_SUBJECT_INFO_ACCESS: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_IP_RESOURCES => {
-                                    let dummy = parse_cbor_ext_ip_resources(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_IP_RESOURCES: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_AS_RESOURCES => {
-                                    let dummy = parse_cbor_ext_as_resources(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_AS_RESOURCES: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_IP_RESOURCES_V2 => {
-                                    let dummy = parse_cbor_ext_ip_resources_v2(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_IP_RESOURCES_V2: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_AS_RESOURCES_V2 => {
-                                    let dummy = parse_cbor_ext_as_resources_v2(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_AS_RESOURCES_V2: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_BIOMETRIC_INFO => {
-                                    let dummy = parse_cbor_ext_biometric_info(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_BIOMETRIC_INFO: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_PRECERT_SIGNING_CERT => {
-                                    let dummy = parse_cbor_ext_precert_signing_cert(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_PRECERT_SIGNING_CERT: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_OCSP_NO_CHECK => {
-                                    let dummy = parse_cbor_ext_ocsp_no_check(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_OCSP_NO_CHECK: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_QUALIFIED_CERT_STATEMENTS => {
-                                    let dummy = parse_cbor_ext_qualified_cert_statements(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_QUALIFIED_CERT_STATEMENTS: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_S_MIME_CAPABILITIES => {
-                                    let dummy = parse_cbor_ext_s_mime_capabilities(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_S_MIME_CAPABILITIES: {:02x?}", dummy);
-                                    dummy
-                                }
-                                EXT_TLS_FEATURES => {
-                                    let dummy = parse_cbor_ext_tls_features(&extension_array[i + 1], *ext_type < 0);
-                                    debug!("parse_cbor_extensions, EXT_TLS_FEATURES: {:02x?}", dummy);
                                     dummy
                                 }
                                 _ => panic!("Ext type {} out of scope!", ext_type),
@@ -2796,6 +2718,15 @@ pub fn cleanup(mut file_contents: Vec<u8>) -> Vec<u8> {
 //              Below are fuctions for parsing and re-encoding cbor encoded extensions back to ASN.1
 //***************************************************************************************************************************************
 //***************************************************************************************************************************************
+// Helper function to initialize OID with optional critical flag
+fn init_oid_with_critical(oid: Oid<'static>, critical: bool) -> Vec<u8> {
+    let mut oid_vec = oid.to_der_vec().unwrap();
+    if critical {
+        oid_vec.extend(ASN1_X509_CRITICAL.to_vec());
+    }
+    oid_vec
+}
+//***************************************************************************************************************************************
 // Generic helper function for simple store-only extensions
 // This consolidates the logic for extensions that just wrap raw bytes in OCTET_STR format
 fn parse_cbor_ext_generic(
@@ -2804,10 +2735,7 @@ fn parse_cbor_ext_generic(
     critical: bool,
     warning_message: Option<&str>,
 ) -> Vec<u8> {
-    let mut oid_vec = oid.to_der_vec().unwrap();
-    if critical {
-        oid_vec.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid_vec = init_oid_with_critical(oid, critical);
     let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
         _ => panic!("Error parsing value: {:?}.", extension_val),
@@ -2821,24 +2749,13 @@ fn parse_cbor_ext_generic(
 //***************************************************************************************************************************************
 //EXT_SUBJECT_KEY_ID = 1
 fn parse_cbor_ext_subject_key_id(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_SUBJECT_KEY_ID_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
-    let ext_val_arr = match extension_val {
-        Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
-        _ => panic!("Error parsing value: {:?}.", extension_val),
-    };
-    lder_to_two_seq(oid, lder_to_generic(ext_val_arr, ASN1_OCTET_STR))
+    parse_cbor_ext_generic(EXT_SUBJECT_KEY_ID_OID, extension_val, critical, None)
 }
 //***************************************************************************************************************************************
 //***************************************************************************************************************************************
 //EXT_KEY_USAGE = 2
 fn parse_cbor_ext_key_usage(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_KEY_USAGE_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_KEY_USAGE_OID, critical);
 
     let mut ext_val_arr = Vec::new();
     match extension_val {
@@ -2871,10 +2788,7 @@ GeneralName = ( GeneralNameType : int, GeneralNameValue : any )
 
 */
 fn parse_cbor_ext_subject_alt_name(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_SUBJECT_ALT_NAME_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_SUBJECT_ALT_NAME_OID, critical);
     //  let ext_val_arr = parse_cbor_general_name(extension_val);
     let ext_val_arr = lder_to_generic(parse_cbor_general_name(extension_val), ASN1_OCTET_STR);
     //let ext_val_arr = parse_cbor_general_name(extension_val); //TODO, check if general name always gives the needed octet string wrapping
@@ -2998,55 +2912,35 @@ fn parse_cbor_general_name(extension_val: &Value) -> Vec<u8> {
 //***************************************************************************************************************************************
 //EXT_BASIC_CONSTRAINTS = 4
 fn parse_cbor_ext_basic_constraints(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_BASIC_CONSTRAINTS_OID.to_der_vec().unwrap();
     if critical {
         trace!("parse_cbor_ext_basic_constraints: CRITICAL!");
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-        let second = {
-            match extension_val {
-                Value::Integer(path_len) => {
-                    if -2 == *path_len {
-                        ASN1_X509_BASIC_CONSTRAINT_FALSE.to_vec()
-                    } else if -1 == *path_len {
-                        lder_to_generic(lder_to_generic(ASN1_X509_CRITICAL.to_vec(), ASN1_SEQ), ASN1_OCTET_STR)
-                    } else {
-                        let path_len_vec = vec![*path_len as u8];
-                        lder_to_generic(lder_to_two_seq(ASN1_X509_CRITICAL.to_vec(), lder_to_pos_int(path_len_vec)), ASN1_OCTET_STR)
-                    }
-                }
-                _ => panic!("Illegal path len {:?}", extension_val),
-            }
-        }; //end let second
-        lder_to_two_seq(oid, second) //TODO check if this also should be wrapped
     } else {
         trace!("parse_cbor_ext_basic_constraints: NOT CRITICAL!");
-        let second = {
-            match extension_val {
-                Value::Integer(path_len) => {
-                    if -2 == *path_len {
-                        ASN1_X509_BASIC_CONSTRAINT_FALSE.to_vec()
-                    } else if -1 == *path_len {
-                        lder_to_generic(lder_to_generic(ASN1_X509_CRITICAL.to_vec(), ASN1_SEQ), ASN1_OCTET_STR)
-                    } else {
-                        let path_len_vec = vec![*path_len as u8];
-                        lder_to_generic(lder_to_two_seq(ASN1_X509_CRITICAL.to_vec(), lder_to_pos_int(path_len_vec)), ASN1_OCTET_STR)
-                    }
-                }
-                _ => panic!("Illegal path len {:?}", extension_val),
-            }
-        }; //end let second
-        lder_to_two_seq(oid, second)
     }
+    let oid = init_oid_with_critical(EXT_BASIC_CONSTRAINTS_OID, critical);
+    
+    let second = match extension_val {
+        Value::Integer(path_len) => {
+            if -2 == *path_len {
+                ASN1_X509_BASIC_CONSTRAINT_FALSE.to_vec()
+            } else if -1 == *path_len {
+                lder_to_generic(lder_to_generic(ASN1_X509_CRITICAL.to_vec(), ASN1_SEQ), ASN1_OCTET_STR)
+            } else {
+                let path_len_vec = vec![*path_len as u8];
+                lder_to_generic(lder_to_two_seq(ASN1_X509_CRITICAL.to_vec(), lder_to_pos_int(path_len_vec)), ASN1_OCTET_STR)
+            }
+        }
+        _ => panic!("Illegal path len {:?}", extension_val),
+    };
+    
+    lder_to_two_seq(oid, second)
 }
 //***************************************************************************************************************************************
 //***************************************************************************************************************************************
 //EXT_CRL_DIST_POINTS = 5
 fn parse_cbor_ext_crl_dist_points(extension_val: &Value, critical: bool) -> Vec<u8> {
     let mut result_vec = Vec::new();
-    let mut oid = EXT_CRL_DIST_POINTS_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_CRL_DIST_POINTS_OID, critical);
     match extension_val {
         Value::Array(elements) => {
             for element in elements {
@@ -3076,10 +2970,7 @@ Qualifier ::= CHOICE {
 */
 fn parse_cbor_ext_cert_policies(extension_val: &Value, critical: bool) -> Vec<u8> {
     let mut result_vec = Vec::new();
-    let mut oid = EXT_CERT_POLICIES_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_CERT_POLICIES_OID, critical);
     let mut can_specify = false;
     let mut text_type = ASN1_UTC_TIME; //must be overwritten
 
@@ -3213,10 +3104,7 @@ KeyIdentifierArray = [
    AuthorityKeyIdentifier = KeyIdentifierArray / KeyIdentifier
 */
 fn parse_cbor_ext_auth_key_id(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_AUTH_KEY_ID_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_AUTH_KEY_ID_OID, critical);
 
     let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(lder_to_generic(raw_val.to_vec(), ASN1_INDEX_ZERO_EXT), ASN1_SEQ),
@@ -3257,10 +3145,7 @@ fn parse_cbor_ext_auth_key_id(extension_val: &Value, critical: bool) -> Vec<u8> 
 //***************************************************************************************************************************************
 //EXT_EXT_KEY_USAGE = 8
 fn parse_cbor_ext_ext_key_usage(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_EXT_KEY_USAGE_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_EXT_KEY_USAGE_OID, critical);
     let mut ext_val_arr = Vec::new();
     match extension_val {
         Value::Integer(key_purpose_id) => {
@@ -3322,10 +3207,7 @@ AuthorityInfoAccessSyntax = [ + AccessDescription ]
 
 fn parse_cbor_ext_auth_info(extension_val: &Value, critical: bool) -> Vec<u8> {
     let mut result_vec = Vec::new();
-    let mut oid = EXT_AUTH_INFO_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_AUTH_INFO_OID, critical);
     match extension_val {
         Value::Array(elements) => {
             let mut wip = Vec::new();
@@ -3397,10 +3279,7 @@ fn parse_cbor_ext_sct_list(extension_val: &Value, critical: bool, ts_offset: i64
     let mut total_tally = 0;
     let ts_os_ms = 1000 * ts_offset as i64;
 
-    let mut oid = EXT_SCT_LIST_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_SCT_LIST_OID, critical);
 
     match extension_val {
         Value::Array(sct_array) => {
@@ -3486,13 +3365,28 @@ fn parse_cbor_ext_sct_list(extension_val: &Value, critical: bool, ts_offset: i64
 }
 //***************************************************************************************************************************************
 //***************************************************************************************************************************************
-fn parse_cbor_ext_subject_directory_attr(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_SUBJECT_DIRECTORY_ATTR_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_subject_directory_attr not implemented / tested"),
-    )
+// Helper function to get OID and warning message for generic extensions
+fn get_ext_oid_and_warning(ext_type: u16) -> (Oid<'static>, Option<&'static str>) {
+    match ext_type {
+        EXT_SUBJECT_DIRECTORY_ATTR => (EXT_SUBJECT_DIRECTORY_ATTR_OID, Some("WARNING ext_subject_directory_attr not implemented / tested")),
+        EXT_NAME_CONSTRAINTS => (EXT_NAME_CONSTRAINTS_OID, Some("WARNING ext_name_constraints not implemented / tested")),
+        EXT_POLICY_MAPPINGS => (EXT_POLICY_MAPPINGS_OID, Some("WARNING ext_policy_mappings not implemented / tested")),
+        EXT_POLICY_CONSTRAINTS => (EXT_POLICY_CONSTRAINTS_OID, Some("WARNING ext_policy_constraints not implemented / tested")),
+        EXT_FRESHEST_CRL => (EXT_FRESHEST_CRL_OID, Some("WARNING ext_freshest_crl not implemented / tested")),
+        EXT_INHIBIT_ANYPOLICY => (EXT_INHIBIT_ANYPOLICY_OID, Some("WARNING ext_inhibit_anypolicy not implemented / tested")),
+        EXT_SUBJECT_INFO_ACCESS => (EXT_SUBJECT_INFO_ACCESS_OID, Some("WARNING ext_subject_info_access not implemented / tested")),
+        EXT_IP_RESOURCES => (EXT_IP_RESOURCES_OID, Some("WARNING ext_ip_resources not implemented / tested")),
+        EXT_AS_RESOURCES => (EXT_AS_RESOURCES_OID, Some("WARNING ext_as_resources not implemented / tested")),
+        EXT_IP_RESOURCES_V2 => (EXT_IP_RESOURCES_V2_OID, Some("WARNING ext_ip_resources_v2 not implemented / tested")),
+        EXT_AS_RESOURCES_V2 => (EXT_AS_RESOURCES_V2_OID, Some("WARNING ext_as_resources_v2 not implemented / tested")),
+        EXT_BIOMETRIC_INFO => (EXT_BIOMETRIC_INFO_OID, Some("WARNING ext_biometric_info not implemented / tested")),
+        EXT_PRECERT_SIGNING_CERT => (EXT_PRECERT_SIGNING_CERT_OID, Some("WARNING ext_precert_signing_cert not implemented / tested")),
+        EXT_OCSP_NO_CHECK => (EXT_OCSP_NO_CHECK_OID, Some("WARNING ext_ocsp_no_check not implemented / tested")),
+        EXT_QUALIFIED_CERT_STATEMENTS => (EXT_QUALIFIED_CERT_STATEMENTS_OID, Some("WARNING ext_qualified_cert_statements not implemented / tested")),
+        EXT_S_MIME_CAPABILITIES => (EXT_S_MIME_CAPABILITIES_OID, Some("WARNING ext_s_mime_capabilities not implemented / tested")),
+        EXT_TLS_FEATURES => (EXT_TLS_FEATURES_OID, Some("WARNING ext_tls_features not tested")),
+        _ => panic!("Unknown extension type: {}", ext_type),
+    }
 }
 //***************************************************************************************************************************************
 //***************************************************************************************************************************************
@@ -3500,178 +3394,13 @@ fn parse_cbor_ext_subject_directory_attr(extension_val: &Value, critical: bool) 
  EXT_ISSUER_ALT_NAME = 25; //0x12
 */
 fn parse_cbor_ext_issuer_alt_name(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_ISSUER_ALT_NAME_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_ISSUER_ALT_NAME_OID, critical);
     let empty_vec = Vec::new();
     let ext_val_arr = parse_cbor_name(&extension_val, &empty_vec);
     lder_to_two_seq(oid, lder_to_generic(ext_val_arr, ASN1_OCTET_STR))
 }
 
 //***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_name_constraints(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_NAME_CONSTRAINTS_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_name_constraints not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_policy_mappings(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_POLICY_MAPPINGS_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_policy_mappings not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_policy_constraints(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_POLICY_CONSTRAINTS_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_policy_constraints not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_freshest_crl(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_FRESHEST_CRL_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_freshest_crl not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_inhibit_anypolicy(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_INHIBIT_ANYPOLICY_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_inhibit_anypolicy not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_subject_info_access(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_SUBJECT_INFO_ACCESS_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_subject_info_access not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_ip_resources(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_IP_RESOURCES_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_ip_resources not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_as_resources(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_AS_RESOURCES_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_as_resources not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_ip_resources_v2(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_IP_RESOURCES_V2_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_ip_resources_v2 not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_as_resources_v2(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_AS_RESOURCES_V2_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_as_resources_v2 not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_biometric_info(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_BIOMETRIC_INFO_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_biometric_info not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_precert_signing_cert(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_PRECERT_SIGNING_CERT_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_precert_signing_cert not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_ocsp_no_check(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_OCSP_NO_CHECK_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_ocsp_no_check not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_qualified_cert_statements(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_QUALIFIED_CERT_STATEMENTS_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_qualified_cert_statements not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-fn parse_cbor_ext_s_mime_capabilities(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_S_MIME_CAPABILITIES_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_s_mime_capabilities not implemented / tested"),
-    )
-}
-//***************************************************************************************************************************************
-//***************************************************************************************************************************************
-/*
- EXT_TLS_FEATURES = 41
- */
-fn parse_cbor_ext_tls_features(extension_val: &Value, critical: bool) -> Vec<u8> {
-    parse_cbor_ext_generic(
-        EXT_TLS_FEATURES_OID,
-        extension_val,
-        critical,
-        Some("WARNING ext_tls_features not tested"),
-    )
-}
 //***************************************************************************************************************************************
 //***************************************************************************************************************************************
 //***************************************************************************************************************************************
