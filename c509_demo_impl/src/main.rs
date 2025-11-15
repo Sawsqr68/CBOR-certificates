@@ -192,31 +192,31 @@ fn get_certs_from_tls(domain_name: String) -> Vec<Cert> {
 /******************************************************************************************************/
 
 // make a TLS connection to get server certificate chain/bag
-fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
+fn loop_on_certs_from_tls(domain_name: &String, cert_number: i64) -> Vec<Cert> {
     let mut config = rustls::ClientConfig::new();
     config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
     let dns_name = webpki::DNSNameRef::try_from_ascii_str(&domain_name).unwrap();
     let mut sess = rustls::ClientSession::new(&std::sync::Arc::new(config), dns_name);
     let conn_addr = domain_name.to_owned() + ":443";
 
-    let sock_test = std::net::TcpStream::connect(conn_addr);
-    let mut sock: std::net::TcpStream; // = std::net::TcpStream::connect(conn_addr).unwrap();
+    let connection_result = std::net::TcpStream::connect(conn_addr);
+    let mut socket: std::net::TcpStream; // = std::net::TcpStream::connect(conn_addr).unwrap();
                                        // let mut fail_now = false;
-    if let Ok(stream) = sock_test {
-        sock = stream;
-        let mut tls = rustls::Stream::new(&mut sess, &mut sock);
+    if let Ok(stream) = connection_result {
+        socket = stream;
+        let mut tls = rustls::Stream::new(&mut sess, &mut socket);
 
         if let Ok(_) = tls.write_all(b"GET / HTTP/1.1") {
             tls.flush().unwrap();
-            let mut ugly_counter = 0;
+            let mut certificate_index = 0;
             tls.sess
                 .get_peer_certificates()
                 .unwrap()
                 .iter()
                 .map(|c| {
-                    loop_on_x509_cert(c.0.clone(), domain_name.as_str(), no, {
-                        ugly_counter += 1;
-                        ugly_counter
+                    loop_on_x509_cert(c.0.clone(), domain_name.as_str(), cert_number, {
+                        certificate_index += 1;
+                        certificate_index
                     })
                 })
                 .collect()
@@ -233,26 +233,26 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
 /******************************************************************************************************/
 /******************************************************************************************************/
 // Parse a DER encoded X509 and encode it as C509, re-encode back to X.509 and check if successful
-fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
-    let oi = input.clone();
-    let ooi = input.clone();
+fn loop_on_x509_cert(input: Vec<u8>, host: &str, cert_number: i64, sub_cert_number: u8) -> Cert {
+    let original_input = input.clone();
+    let original_input_copy = input.clone();
     let parsed_cert = parse_x509_cert(input);
     let reversed_cert = parse_c509_cert(lcbor_array(&parsed_cert.cbor), false);
     //let rev_copy = reversed_cert.der.clone();
 
-    let ndate = chrono::Local::now();
-    let ts = ndate.format("%Y-%m-%d_%H:%M:%S.%s");
+    let current_date = chrono::Local::now();
+    let timestamp = current_date.format("%Y-%m-%d_%H:%M:%S.%s");
 
-    let correct_input_path = "../could_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
-    let failed_input_path = "../failed_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
+    let correct_input_path = "../could_convert/".to_string() + host + "_" + &sub_cert_number.to_string() + "_" + &timestamp.to_string();
+    let failed_input_path = "../failed_convert/".to_string() + host + "_" + &sub_cert_number.to_string() + "_" + &timestamp.to_string();
     let write_path; 
 
-    if reversed_cert.der == oi {
-        info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), correct_input_path);
+    if reversed_cert.der == original_input {
+        info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, cert_number, original_input.len(), reversed_cert.der.len(), correct_input_path);
         write_path = &correct_input_path;
     } else {
         print_str_warning("File re-encoding failure");
-        warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), failed_input_path);
+        warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, cert_number, original_input.len(), reversed_cert.der.len(), failed_input_path);
         write_path = &failed_input_path;
     }
     let write_input_path = write_path.to_owned() + ".input.hex";
@@ -260,13 +260,13 @@ fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
     let mut input_file = File::create(write_input_path).expect("File not found");
     let mut output_file = File::create(write_output_path).expect("File not found");
 
-    for byte in oi {
+    for byte in original_input {
         let _ = write!(input_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
     for byte in reversed_cert.der {
         let _ = write!(output_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
-    Cert { der: ooi, cbor: Vec::new() }
+    Cert { der: original_input_copy, cbor: Vec::new() }
 }
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -278,11 +278,11 @@ fn read_hosts_from_file(filename: &str) -> Vec<Cert> {
             .map(String::from) // Convert each slice into a String
             .collect() // Gather them together into a vector
     };
-    let mut counter = 0;
+    let mut host_index = 0;
     for host in host_vector {
-        info!("Testing {} with number {}", host, counter);
-        loop_on_certs_from_tls(&host, counter);
-        counter += 1;
+        info!("Testing {} with number {}", host, host_index);
+        loop_on_certs_from_tls(&host, host_index);
+        host_index += 1;
     }
     //Cert { der: Vec::new(), cbor: Vec::new() }
     Vec::new()
@@ -351,13 +351,13 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
         // Special handling for RSA
         if pk_type == PK_RSA_ENC {
             let rsa_pk = lder_vec_len(subject_public_key, ASN1_SEQ, 2);
-            let n = lcbor_bytes(lder_uint(rsa_pk[0]));
-            let e = lcbor_bytes(lder_uint(rsa_pk[1]));
-            if e == [0x43, 0x01, 0x00, 0x01] {
+            let modulus = lcbor_bytes(lder_uint(rsa_pk[0]));
+            let exponent = lcbor_bytes(lder_uint(rsa_pk[1]));
+            if exponent == [0x43, 0x01, 0x00, 0x01] {
                 //check for exponent == 65537
-                output.push(n);
+                output.push(modulus);
             } else {
-                output.push(lcbor_array(&[n, e]));
+                output.push(lcbor_array(&[modulus, exponent]));
             }
         // Special handling for ECDSA
         /*
@@ -373,16 +373,16 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
             assert!(subject_public_key.len() % 2 == 1, "Expected odd subject public key length!");
             let coord_size = (subject_public_key.len() - 1) / 2;
             let secg_byte = subject_public_key[0];
-            let x = &subject_public_key[1..1 + coord_size];
+            let x_coordinate = &subject_public_key[1..1 + coord_size];
             if secg_byte == SECG_UNCOMPRESSED {
-                let y = &subject_public_key[1 + coord_size..];
-                if y[coord_size - 1] & 1 == 0 {
-                    output.push(lcbor_bytes(&[&[SECG_EVEN_COMPRESSED], x].concat()));
+                let y_coordinate = &subject_public_key[1 + coord_size..];
+                if y_coordinate[coord_size - 1] & 1 == 0 {
+                    output.push(lcbor_bytes(&[&[SECG_EVEN_COMPRESSED], x_coordinate].concat()));
                 } else {
-                    output.push(lcbor_bytes(&[&[SECG_ODD_COMPRESSED], x].concat()));
+                    output.push(lcbor_bytes(&[&[SECG_ODD_COMPRESSED], x_coordinate].concat()));
                 }
             } else if secg_byte == SECG_EVEN || secg_byte == SECG_ODD as u8 {
-                output.push(lcbor_bytes(&[&[-(secg_byte as i8) as u8], x].concat()));
+                output.push(lcbor_bytes(&[&[-(secg_byte as i8) as u8], x_coordinate].concat()));
             } else {
                 panic!("Expected SECG byte to be 2, 3, or 4!")
             }
@@ -571,10 +571,10 @@ fn cbor_encode_algorithm_identifier(der_bytes: &[u8]) -> Vec<u8> {
 // CBOR encodes a DER encoded ECDSA signature value
 fn cbor_encode_ecdsa_signature(der_bytes: &[u8]) -> Vec<u8> {
     let signature_seq = lder_vec(der_bytes, ASN1_SEQ);
-    let r_value = lder_uint(signature_seq[0]).to_vec();
-    let s_value = lder_uint(signature_seq[1]).to_vec();
-    let max_length = std::cmp::max(r_value.len(), s_value.len());
-    lcbor_bytes(&[vec![0; max_length - r_value.len()], r_value, vec![0; max_length - s_value.len()], s_value].concat())
+    let r_component = lder_uint(signature_seq[0]).to_vec();
+    let s_component = lder_uint(signature_seq[1]).to_vec();
+    let max_length = std::cmp::max(r_component.len(), s_component.len());
+    lcbor_bytes(&[vec![0; max_length - r_component.len()], r_component, vec![0; max_length - s_component.len()], s_component].concat())
 }
 fn cbor_optimize_array(vector: &[Vec<u8>], type_marker: u8) -> Vec<u8> {
     if vector.len() == 2 && vector[0] == [type_marker] {
@@ -599,10 +599,10 @@ CBOR encode GeneralNames
 Used for and in:
 EXT_SUBJECT_ALT_NAME
 Authority Key Identifier extension
-Note: no wrapping array if content is a single name of type opt
+Note: no wrapping array if content is a single name of type optional_name_type
 */
-fn cbor_encode_general_names(der_bytes: &[u8], asn1_tag: u8, opt: u8) -> Vec<u8> {
-    let unwrap_single_name = opt;
+fn cbor_encode_general_names(der_bytes: &[u8], asn1_tag: u8, optional_name_type: u8) -> Vec<u8> {
+    let unwrap_single_name = optional_name_type;
     let names = lder_vec(der_bytes, asn1_tag);
     let mut result = Vec::new();
     for name in names {
@@ -714,22 +714,22 @@ And the text decoding in Figure 28 is an output of Peter Gutmann's "dumpasn1" pr
    :   }
    :   }
 */
-fn _cbor_other_name_bundle(b: &[u8]) -> Vec<u8> {
+fn _cbor_other_name_bundle(bundle_bytes: &[u8]) -> Vec<u8> {
     /*
     TODO: agree on a possibly more fine grained parsing of the structure contained in the value.
     For now just store the content as a byte string
     let mut vec = Vec::new();
     let mut value;
-    match b[0] {
-     ASN1_IA5_SRT => { value = der(b, ASN1_IA5_SRT)
+    match bundle_bytes[0] {
+     ASN1_IA5_SRT => { value = der(bundle_bytes, ASN1_IA5_SRT)
      },
-     ASN1_UTF8_STR => { value = der(b, ASN1_UTF8_STR)
+     ASN1_UTF8_STR => { value = der(bundle_bytes, ASN1_UTF8_STR)
      },
      _ => panic!("Unknown general value type"),
     }
     */
     let mut vec = Vec::new();
-    vec.push(lcbor_bytes(b));
+    vec.push(lcbor_bytes(bundle_bytes));
     lcbor_array(&vec)
 }
 /*
@@ -821,21 +821,21 @@ fn cbor_encode_autonomous_system_resources(der_bytes: &[u8]) -> Vec<u8> {
     let as_identifiers = lder(der_bytes, ASN1_SEQ);
     let asnum = lder(as_identifiers, ASN1_INDEX_ZERO);
     let mut result = Vec::new();
-    let mut last = 0u64;
+    let mut last_asid = 0u64;
     if asnum == [0x05, 0x00] {
         return lcbor_simple(CBOR_NULL);
     }
     for elem in lder_vec(asnum, ASN1_SEQ) {
         if elem[0] == ASN1_INT {
             let asid = be_bytes_to_u64(lder_uint(elem));
-            result.push(lcbor_uint(asid - last));
-            last = asid;
+            result.push(lcbor_uint(asid - last_asid));
+            last_asid = asid;
         } else if elem[0] == ASN1_SEQ {
             let mut range = Vec::new();
-            for elem2 in lder_vec_len(elem, ASN1_SEQ, 2) {
-                let asid = be_bytes_to_u64(lder_uint(elem2));
-                range.push(lcbor_uint(asid - last));
-                last = asid;
+            for range_elem in lder_vec_len(elem, ASN1_SEQ, 2) {
+                let asid = be_bytes_to_u64(lder_uint(range_elem));
+                range.push(lcbor_uint(asid - last_asid));
+                last_asid = asid;
             }
             result.push(lcbor_array(&range));
         } else {
@@ -2075,19 +2075,19 @@ fn parse_cbor_name<'a>(input: &'a Value, _empty_vec: &'a Vec<Value>) -> Vec<u8> 
     match input {
         Value::Text(name) => {
             trace!("CBOR name: {:x?}", name);
-            let cn = name.as_bytes();
+            let common_name = name.as_bytes();
 
-            let attr_type_and_val = lder_to_two_seq(ATT_COMMON_NAME_OID.to_der_vec().unwrap(), lder_to_generic(cn.to_vec(), ASN1_UTF8_STR));
+            let attr_type_and_val = lder_to_two_seq(ATT_COMMON_NAME_OID.to_der_vec().unwrap(), lder_to_generic(common_name.to_vec(), ASN1_UTF8_STR));
             result_vec.push(lder_to_generic(attr_type_and_val, ASN1_SET));
         }
         Value::Bytes(b) => {
             trace!("CBOR bytes: {:x?}", b);
-            let cn = match b[0] {
+            let common_name = match b[0] {
                 0x00 => parse_cbor_eui64(&b[1..b.len()]),
                 0x01 => parse_cbor_eui64(&b[1..b.len()]),
                 _ => panic!("Unknown Name format'"),
             };
-            let attr_type_and_val = lder_to_two_seq(ATT_COMMON_NAME_OID.to_der_vec().unwrap(), lder_to_generic(cn, ASN1_UTF8_STR));
+            let attr_type_and_val = lder_to_two_seq(ATT_COMMON_NAME_OID.to_der_vec().unwrap(), lder_to_generic(common_name, ASN1_UTF8_STR));
             result_vec.push(lder_to_generic(attr_type_and_val, ASN1_SET));
         }
         Value::Array(name_elements) => {
@@ -2159,15 +2159,15 @@ fn parse_cbor_time(input: &Value) -> (Vec<u8>, i64) {
         Value::Integer(val) => {
 
             trace!("parse_cbor_time, incoming ts: {}", *val);
-            let ts = chrono::TimeZone::timestamp(&chrono::Utc, *val as i64, 0);
+            let timestamp = chrono::TimeZone::timestamp(&chrono::Utc, *val as i64, 0);
             if ASN1_UTC_TIME_MAX < *val as i64 {
                 type_flag = ASN1_GEN_TIME;
                 //using four digit year format to match GEN time format
-                (ts.format("%Y%m%d%H%M%SZ").to_string(), *val)
+                (timestamp.format("%Y%m%d%H%M%SZ").to_string(), *val)
             } //else if (*val as i64) < ASN1_UTC_TIME_Y2K {            panic!("Unresolved pre 2000 date handling bug, aborting");            }
             else {
                 //using two digit year format to match UTC time format
-                (ts.format("%y%m%d%H%M%SZ").to_string(), *val)
+                (timestamp.format("%y%m%d%H%M%SZ").to_string(), *val)
             }
         }
         Value::Null => {
@@ -2303,8 +2303,8 @@ fn decompress_ecc_key(pub_key_x: Vec<u8>, is_even: bool, ecc_type_id: i64) -> Ve
     //P-256
     //y^2 ≡ x^3+ax+b
     // let ms = { if is_even == true { Sign::Plus } else { Sign::Minus } };
-    let x = BigInt::from_bytes_be(Sign::Plus, &pub_key_x);
-    let mc = {
+    let x_coordinate = BigInt::from_bytes_be(Sign::Plus, &pub_key_x);
+    let curve_params = {
         match ecc_type_id {
             PK_SECP256R => ECCCurve {
                 p: BigInt::parse_bytes(b"ffffffff00000001000000000000000000000000ffffffffffffffffffffffff", 16).unwrap(),
@@ -2333,9 +2333,9 @@ fn decompress_ecc_key(pub_key_x: Vec<u8>, is_even: bool, ecc_type_id: i64) -> Ve
             _ => panic!("Cannot handle ECC curve of type {}", ecc_type_id),
         }
     };
-    //let big_int = &&x;
-    let y2 = (pow(x.clone(), 3) + &mc.a * &x.clone() + &mc.b) % &mc.p;
-    let mut y = y2.modpow(&((&mc.p + BigInt::one()) / BigInt::from(4)), &mc.p);
+    //let big_int = &&x_coordinate;
+    let y2 = (pow(x_coordinate.clone(), 3) + &curve_params.a * &x_coordinate.clone() + &curve_params.b) % &curve_params.p;
+    let mut y = y2.modpow(&((&curve_params.p + BigInt::one()) / BigInt::from(4)), &curve_params.p);
 
     let y_is_even = y.clone() % 2 == BigInt::zero();
     //  let mut ys = y.clone();
@@ -2343,18 +2343,18 @@ fn decompress_ecc_key(pub_key_x: Vec<u8>, is_even: bool, ecc_type_id: i64) -> Ve
 
     //  if (y[y.len() - 1] & 1 == 0 && is_even == false) || y[y.len() - 1] & 1 == 1 && is_even == true {
     if y_is_even != is_even {
-        y = &mc.p - &y;
+        y = &curve_params.p - &y;
         trace!("decompress_ecc_key: inverting y!");
     }
-    //let mut y_inv = &mc.p-&y;
-    //let y_inv = &mc.p-&y;
-    let (_, mut yb) = y.to_bytes_be();
+    //let mut y_inv = &curve_params.p-&y;
+    //let y_inv = &curve_params.p-&y;
+    let (_, mut y_bytes) = y.to_bytes_be();
 
-    if yb.len() < mc.l { //TODO: currently assuming only one leading 0
-        yb.insert(0, 0);
+    if y_bytes.len() < curve_params.l { //TODO: currently assuming only one leading 0
+        y_bytes.insert(0, 0);
     } 
-    trace!("decompress_ecc_key: resulting y:\n{:02x?}", yb);
-    yb
+    trace!("decompress_ecc_key: resulting y:\n{:02x?}", y_bytes);
+    y_bytes
     //std::process::exit(0);
 }
 
@@ -2757,15 +2757,15 @@ pub fn parse_cbor_ecc_sig_value(sig_val_bytes: Vec<u8>) -> Vec<u8> {
 
 
     let start_r_index = if sig_val_bytes[0] == 0 { 1 } else { 0 };
-    let r = sig_val_bytes[start_r_index..sig_val_bytes.len() / 2].to_vec();
-    trace!("parse_cbor_ecc_sig_value, restored r: {:02?}", r);
+    let r_component = sig_val_bytes[start_r_index..sig_val_bytes.len() / 2].to_vec();
+    trace!("parse_cbor_ecc_sig_value, restored r: {:02?}", r_component);
 
     let midpoint = if sig_val_bytes[sig_val_bytes.len() / 2] == 0 { sig_val_bytes.len() / 2+1 } else { sig_val_bytes.len() / 2 };         
-    let s = sig_val_bytes[midpoint..sig_val_bytes.len()].to_vec();
-    trace!("parse_cbor_ecc_sig_value, restored s: {:02?}", s);
+    let s_component = sig_val_bytes[midpoint..sig_val_bytes.len()].to_vec();
+    trace!("parse_cbor_ecc_sig_value, restored s: {:02?}", s_component);
     
-    result.push(lder_to_pos_int(r));
-    result.push(lder_to_pos_int(s));
+    result.push(lder_to_pos_int(r_component));
+    result.push(lder_to_pos_int(s_component));
 
     lder_to_bit_str(lder_to_seq(result))
 }
@@ -3405,9 +3405,9 @@ fn parse_cbor_ext_sct_list(extension_val: &Value, critical: bool, ts_offset: i64
                 match sct_array.get(i + 1).unwrap() {
                     Value::Integer(ts) => {
                         trace!("parse_cbor_ext_sct_list, handle ts {} and notBefore {}", ts, ts_os_ms);
-                        let o_ts = (*ts as i64) + ts_os_ms;
-                        let b = o_ts.to_be_bytes();
-                        ext_val_arr.extend(b);
+                        let offset_timestamp = (*ts as i64) + ts_os_ms;
+                        let timestamp_bytes = offset_timestamp.to_be_bytes();
+                        ext_val_arr.extend(timestamp_bytes);
                         sct_size += 8;
                     }
                     _ => {
@@ -3432,13 +3432,13 @@ fn parse_cbor_ext_sct_list(extension_val: &Value, critical: bool, ts_offset: i64
                         trace!("parse_cbor_ext_sct_list, reconstruct r+s, found sigVal bytes of len {}: {:02x?}", sig_val.len(), sig_val);
                         //let get = ;
                         let start_r_index = if sig_val[0] == 0 { 1 } else { 0 }; //TODO test more
-                        let r = lder_to_pos_int(sig_val[start_r_index..sig_val.len() / 2].to_vec());
+                        let r_component = lder_to_pos_int(sig_val[start_r_index..sig_val.len() / 2].to_vec());
                         
                         let start_s_index = if sig_val[sig_val.len() / 2] == 0 { sig_val.len() / 2 + 1 } else { sig_val.len() / 2 }; 
-                        let s_r = sig_val[start_s_index..sig_val.len()].to_vec();
-                        let s = lder_to_pos_int(s_r.clone());
+                        let s_component_raw = sig_val[start_s_index..sig_val.len()].to_vec();
+                        let s_component = lder_to_pos_int(s_component_raw.clone());
 
-                        let seq = lder_to_two_seq(r, s);
+                        let seq = lder_to_two_seq(r_component, s_component);
                         trace!("parse_cbor_ext_sct_list, reconstruct r+s, after seq of len {}: {:02x?}", seq.len(), seq);
                         ext_val_arr.push(0x00);
                         ext_val_arr.push(seq.len() as u8); //TODO handle larger lens
