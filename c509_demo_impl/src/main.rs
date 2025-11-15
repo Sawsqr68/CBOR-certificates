@@ -2718,6 +2718,15 @@ pub fn cleanup(mut file_contents: Vec<u8>) -> Vec<u8> {
 //              Below are fuctions for parsing and re-encoding cbor encoded extensions back to ASN.1
 //***************************************************************************************************************************************
 //***************************************************************************************************************************************
+// Helper function to initialize OID with optional critical flag
+fn init_oid_with_critical(oid: Oid<'static>, critical: bool) -> Vec<u8> {
+    let mut oid_vec = oid.to_der_vec().unwrap();
+    if critical {
+        oid_vec.extend(ASN1_X509_CRITICAL.to_vec());
+    }
+    oid_vec
+}
+//***************************************************************************************************************************************
 // Generic helper function for simple store-only extensions
 // This consolidates the logic for extensions that just wrap raw bytes in OCTET_STR format
 fn parse_cbor_ext_generic(
@@ -2726,10 +2735,7 @@ fn parse_cbor_ext_generic(
     critical: bool,
     warning_message: Option<&str>,
 ) -> Vec<u8> {
-    let mut oid_vec = oid.to_der_vec().unwrap();
-    if critical {
-        oid_vec.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid_vec = init_oid_with_critical(oid, critical);
     let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
         _ => panic!("Error parsing value: {:?}.", extension_val),
@@ -2743,24 +2749,13 @@ fn parse_cbor_ext_generic(
 //***************************************************************************************************************************************
 //EXT_SUBJECT_KEY_ID = 1
 fn parse_cbor_ext_subject_key_id(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_SUBJECT_KEY_ID_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
-    let ext_val_arr = match extension_val {
-        Value::Bytes(raw_val) => lder_to_generic(raw_val.to_vec(), ASN1_OCTET_STR),
-        _ => panic!("Error parsing value: {:?}.", extension_val),
-    };
-    lder_to_two_seq(oid, lder_to_generic(ext_val_arr, ASN1_OCTET_STR))
+    parse_cbor_ext_generic(EXT_SUBJECT_KEY_ID_OID, extension_val, critical, None)
 }
 //***************************************************************************************************************************************
 //***************************************************************************************************************************************
 //EXT_KEY_USAGE = 2
 fn parse_cbor_ext_key_usage(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_KEY_USAGE_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_KEY_USAGE_OID, critical);
 
     let mut ext_val_arr = Vec::new();
     match extension_val {
@@ -2793,10 +2788,7 @@ GeneralName = ( GeneralNameType : int, GeneralNameValue : any )
 
 */
 fn parse_cbor_ext_subject_alt_name(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_SUBJECT_ALT_NAME_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_SUBJECT_ALT_NAME_OID, critical);
     //  let ext_val_arr = parse_cbor_general_name(extension_val);
     let ext_val_arr = lder_to_generic(parse_cbor_general_name(extension_val), ASN1_OCTET_STR);
     //let ext_val_arr = parse_cbor_general_name(extension_val); //TODO, check if general name always gives the needed octet string wrapping
@@ -2920,13 +2912,12 @@ fn parse_cbor_general_name(extension_val: &Value) -> Vec<u8> {
 //***************************************************************************************************************************************
 //EXT_BASIC_CONSTRAINTS = 4
 fn parse_cbor_ext_basic_constraints(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_BASIC_CONSTRAINTS_OID.to_der_vec().unwrap();
     if critical {
         trace!("parse_cbor_ext_basic_constraints: CRITICAL!");
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
     } else {
         trace!("parse_cbor_ext_basic_constraints: NOT CRITICAL!");
     }
+    let oid = init_oid_with_critical(EXT_BASIC_CONSTRAINTS_OID, critical);
     
     let second = match extension_val {
         Value::Integer(path_len) => {
@@ -2949,10 +2940,7 @@ fn parse_cbor_ext_basic_constraints(extension_val: &Value, critical: bool) -> Ve
 //EXT_CRL_DIST_POINTS = 5
 fn parse_cbor_ext_crl_dist_points(extension_val: &Value, critical: bool) -> Vec<u8> {
     let mut result_vec = Vec::new();
-    let mut oid = EXT_CRL_DIST_POINTS_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_CRL_DIST_POINTS_OID, critical);
     match extension_val {
         Value::Array(elements) => {
             for element in elements {
@@ -2982,10 +2970,7 @@ Qualifier ::= CHOICE {
 */
 fn parse_cbor_ext_cert_policies(extension_val: &Value, critical: bool) -> Vec<u8> {
     let mut result_vec = Vec::new();
-    let mut oid = EXT_CERT_POLICIES_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_CERT_POLICIES_OID, critical);
     let mut can_specify = false;
     let mut text_type = ASN1_UTC_TIME; //must be overwritten
 
@@ -3119,10 +3104,7 @@ KeyIdentifierArray = [
    AuthorityKeyIdentifier = KeyIdentifierArray / KeyIdentifier
 */
 fn parse_cbor_ext_auth_key_id(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_AUTH_KEY_ID_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_AUTH_KEY_ID_OID, critical);
 
     let ext_val_arr = match extension_val {
         Value::Bytes(raw_val) => lder_to_generic(lder_to_generic(raw_val.to_vec(), ASN1_INDEX_ZERO_EXT), ASN1_SEQ),
@@ -3163,10 +3145,7 @@ fn parse_cbor_ext_auth_key_id(extension_val: &Value, critical: bool) -> Vec<u8> 
 //***************************************************************************************************************************************
 //EXT_EXT_KEY_USAGE = 8
 fn parse_cbor_ext_ext_key_usage(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_EXT_KEY_USAGE_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_EXT_KEY_USAGE_OID, critical);
     let mut ext_val_arr = Vec::new();
     match extension_val {
         Value::Integer(key_purpose_id) => {
@@ -3228,10 +3207,7 @@ AuthorityInfoAccessSyntax = [ + AccessDescription ]
 
 fn parse_cbor_ext_auth_info(extension_val: &Value, critical: bool) -> Vec<u8> {
     let mut result_vec = Vec::new();
-    let mut oid = EXT_AUTH_INFO_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_AUTH_INFO_OID, critical);
     match extension_val {
         Value::Array(elements) => {
             let mut wip = Vec::new();
@@ -3303,10 +3279,7 @@ fn parse_cbor_ext_sct_list(extension_val: &Value, critical: bool, ts_offset: i64
     let mut total_tally = 0;
     let ts_os_ms = 1000 * ts_offset as i64;
 
-    let mut oid = EXT_SCT_LIST_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_SCT_LIST_OID, critical);
 
     match extension_val {
         Value::Array(sct_array) => {
@@ -3421,10 +3394,7 @@ fn get_ext_oid_and_warning(ext_type: u16) -> (Oid<'static>, Option<&'static str>
  EXT_ISSUER_ALT_NAME = 25; //0x12
 */
 fn parse_cbor_ext_issuer_alt_name(extension_val: &Value, critical: bool) -> Vec<u8> {
-    let mut oid = EXT_ISSUER_ALT_NAME_OID.to_der_vec().unwrap();
-    if critical {
-        oid.extend(ASN1_X509_CRITICAL.to_vec());
-    }
+    let oid = init_oid_with_critical(EXT_ISSUER_ALT_NAME_OID, critical);
     let empty_vec = Vec::new();
     let ext_val_arr = parse_cbor_name(&extension_val, &empty_vec);
     lder_to_two_seq(oid, lder_to_generic(ext_val_arr, ASN1_OCTET_STR))
