@@ -244,8 +244,8 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
 /******************************************************************************************************/
 // Parse a DER encoded X509 and encode it as C509, re-encode back to X.509 and check if successful
 fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
-    // Store original input for comparison - avoid unnecessary clones
-    let original_input = &input;
+    // Clone input once at the start for comparison and return value
+    let original_input = input.clone();
     let parsed_cert = parse_x509_cert(input);
     let reversed_cert = parse_c509_cert(lcbor_array(&parsed_cert.cbor), false);
 
@@ -255,9 +255,9 @@ fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
     // Use format! macro for efficient string building instead of repeated concatenation
     let correct_input_path = format!("../could_convert/{}_{}_{}", host, sub_no, ts);
     let failed_input_path = format!("../failed_convert/{}_{}_{}", host, sub_no, ts);
-    let write_path; 
+    let write_path;
 
-    if reversed_cert.der == *original_input {
+    if reversed_cert.der == original_input {
         info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, original_input.len(), reversed_cert.der.len(), correct_input_path);
         write_path = &correct_input_path;
     } else {
@@ -270,14 +270,14 @@ fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
     let mut input_file = File::create(write_input_path).expect("File not found");
     let mut output_file = File::create(write_output_path).expect("File not found");
 
-    for byte in original_input {
+    for byte in &original_input {
         let _ = write!(input_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
     for byte in &reversed_cert.der {
         let _ = write!(output_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
-    // Clone original_input only once at the end when creating the Cert struct
-    Cert { der: original_input.clone(), cbor: Vec::new() }
+    // Return original_input without additional clone
+    Cert { der: original_input, cbor: Vec::new() }
 }
 /******************************************************************************************************/
 /******************************************************************************************************/
