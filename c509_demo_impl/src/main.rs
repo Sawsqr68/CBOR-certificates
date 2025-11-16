@@ -90,6 +90,16 @@ use std::fs::File;
 
 use log::{trace, debug, info, warn};
 use env_logger::Env;
+use std::sync::LazyLock;
+
+// Cache compiled regex patterns to avoid recompilation on every call
+static EUI_64_PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"^([A-F\d]{2}-){7}[A-F\d]{2}$").unwrap()
+});
+
+static HEX_PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"^(?:[A-Fa-f0-9]{2})*$").unwrap()
+});
 
 
 pub const SECG_EVEN: u8 = 0x02;
@@ -234,39 +244,40 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
 /******************************************************************************************************/
 // Parse a DER encoded X509 and encode it as C509, re-encode back to X.509 and check if successful
 fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
-    let oi = input.clone();
-    let ooi = input.clone();
+    // Clone input once at the start for comparison and return value
+    let original_input = input.clone();
     let parsed_cert = parse_x509_cert(input);
     let reversed_cert = parse_c509_cert(lcbor_array(&parsed_cert.cbor), false);
-    //let rev_copy = reversed_cert.der.clone();
 
     let ndate = chrono::Local::now();
     let ts = ndate.format("%Y-%m-%d_%H:%M:%S.%s");
 
-    let correct_input_path = "../could_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
-    let failed_input_path = "../failed_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
-    let write_path; 
+    // Use format! macro for efficient string building instead of repeated concatenation
+    let correct_input_path = format!("../could_convert/{}_{}_{}", host, sub_no, ts);
+    let failed_input_path = format!("../failed_convert/{}_{}_{}", host, sub_no, ts);
+    let write_path;
 
-    if reversed_cert.der == oi {
-        info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), correct_input_path);
+    if reversed_cert.der == original_input {
+        info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, original_input.len(), reversed_cert.der.len(), correct_input_path);
         write_path = &correct_input_path;
     } else {
         print_str_warning("File re-encoding failure");
-        warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), failed_input_path);
+        warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, original_input.len(), reversed_cert.der.len(), failed_input_path);
         write_path = &failed_input_path;
     }
-    let write_input_path = write_path.to_owned() + ".input.hex";
-    let write_output_path = write_path.to_owned() + ".output.hex";
+    let write_input_path = format!("{}.input.hex", write_path);
+    let write_output_path = format!("{}.output.hex", write_path);
     let mut input_file = File::create(write_input_path).expect("File not found");
     let mut output_file = File::create(write_output_path).expect("File not found");
 
-    for byte in oi {
+    for byte in &original_input {
         let _ = write!(input_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
-    for byte in reversed_cert.der {
+    for byte in &reversed_cert.der {
         let _ = write!(output_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
-    Cert { der: ooi, cbor: Vec::new() }
+    // Return original_input without additional clone
+    Cert { der: original_input, cbor: Vec::new() }
 }
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -292,7 +303,8 @@ fn read_hosts_from_file(filename: &str) -> Vec<Cert> {
 /******************************************************************************************************/
 // Parse a DER encoded X509 and encode it as C509
 fn parse_x509_cert(input: Vec<u8>) -> Cert {
-    let mut output = Vec::new();
+    // Pre-allocate capacity for typical certificate with ~12 fields
+    let mut output = Vec::with_capacity(12);
     // der Certificate
     let certificate = lder_vec_len(&input, ASN1_SEQ, 3);
     let tbs_certificate = lder_vec_len(certificate[0], ASN1_SEQ, 8);
@@ -376,13 +388,20 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
             let x = &subject_public_key[1..1 + coord_size];
             if secg_byte == SECG_UNCOMPRESSED {
                 let y = &subject_public_key[1 + coord_size..];
+                // Optimize concat by pre-allocating
+                let mut compressed_key = Vec::with_capacity(1 + x.len());
                 if y[coord_size - 1] & 1 == 0 {
-                    output.push(lcbor_bytes(&[&[SECG_EVEN_COMPRESSED], x].concat()));
+                    compressed_key.push(SECG_EVEN_COMPRESSED);
                 } else {
-                    output.push(lcbor_bytes(&[&[SECG_ODD_COMPRESSED], x].concat()));
+                    compressed_key.push(SECG_ODD_COMPRESSED);
                 }
+                compressed_key.extend_from_slice(x);
+                output.push(lcbor_bytes(&compressed_key));
             } else if secg_byte == SECG_EVEN || secg_byte == SECG_ODD as u8 {
-                output.push(lcbor_bytes(&[&[-(secg_byte as i8) as u8], x].concat()));
+                let mut compressed_key = Vec::with_capacity(1 + x.len());
+                compressed_key.push(-(secg_byte as i8) as u8);
+                compressed_key.extend_from_slice(x);
+                output.push(lcbor_bytes(&compressed_key));
             } else {
                 panic!("Expected SECG byte to be 2, 3, or 4!")
             }
@@ -397,7 +416,8 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
     }
     // issuerUniqueID, subjectUniqueID -- not supported
     // extensions
-    let mut vec = Vec::new();
+    // Pre-allocate capacity based on typical number of extensions (2 items per extension)
+    let mut vec = Vec::with_capacity(extensions.len() * 2);
     for e in &extensions {
         let extension = lder_vec(e, ASN1_SEQ);
         assert!(extension.len() < 4, "Expected length 2 or 3");
@@ -515,12 +535,11 @@ fn cbor_encode_name(der_bytes: &[u8]) -> Vec<u8> {
      for a total length of 7.
     *Otherwise it is encoded as a CBOR text string.
     */
-    let eui_64_pattern = regex::Regex::new(r"^([A-F\d]{2}-){7}[A-F\d]{2}$").unwrap();
-    let hex_pattern = regex::Regex::new(r"^(?:[A-Fa-f0-9]{2})*$").unwrap();
+    // Use cached regex patterns instead of compiling on every call
     if attributes_result.len() == 2 && attributes_result[0] == [ATT_COMMON_NAME as u8] {
         //let cn = from_utf8(&attributes_result[0][1..]).unwrap();
         attributes_result.remove(0);
-        if eui_64_pattern.is_match(from_utf8(&attributes_result[0][1..]).unwrap()) {
+        if EUI_64_PATTERN.is_match(from_utf8(&attributes_result[0][1..]).unwrap()) {
             attributes_result[0].retain(|&byte| byte != b'-' && byte != 0x77); // 0x77 = text string length 23
             if &attributes_result[0][6..10] == b"FFFE" {
                 attributes_result[0].drain(6..10);
@@ -528,12 +547,13 @@ fn cbor_encode_name(der_bytes: &[u8]) -> Vec<u8> {
             attributes_result[0].insert(0, '1' as u8);
             attributes_result[0].insert(0, '0' as u8);
             attributes_result[0] = lcbor_bytes(&hex::decode(&attributes_result[0]).unwrap());
-        } else if hex_pattern.is_match(from_utf8(&attributes_result[0][1..]).unwrap()) {
+        } else if HEX_PATTERN.is_match(from_utf8(&attributes_result[0][1..]).unwrap()) {
             attributes_result[0][0] = '0' as u8; //overwrite the added utf8 text marker at the start
             attributes_result[0].insert(0, '0' as u8);
             attributes_result[0] = lcbor_bytes(&hex::decode(&attributes_result[0]).unwrap());
         }
-        return attributes_result[0].clone();
+        // Return moved value instead of cloning
+        return attributes_result.into_iter().next().unwrap();
     }
     lcbor_array(&attributes_result)
 }
@@ -574,7 +594,13 @@ fn cbor_encode_ecdsa_signature(der_bytes: &[u8]) -> Vec<u8> {
     let r_value = lder_uint(signature_seq[0]).to_vec();
     let s_value = lder_uint(signature_seq[1]).to_vec();
     let max_length = std::cmp::max(r_value.len(), s_value.len());
-    lcbor_bytes(&[vec![0; max_length - r_value.len()], r_value, vec![0; max_length - s_value.len()], s_value].concat())
+    // Optimize concat by pre-allocating and using extend
+    let mut result = Vec::with_capacity(max_length * 2);
+    result.resize(max_length - r_value.len(), 0);
+    result.extend_from_slice(&r_value);
+    result.resize(result.len() + (max_length - s_value.len()), 0);
+    result.extend_from_slice(&s_value);
+    lcbor_bytes(&result)
 }
 fn cbor_optimize_array(vector: &[Vec<u8>], type_marker: u8) -> Vec<u8> {
     if vector.len() == 2 && vector[0] == [type_marker] {
@@ -991,7 +1017,8 @@ fn cbor_encode_ext_crl_distribution_points(der_bytes: &[u8]) -> Vec<u8> {
         if uri_list.len() > 1 {
             result.push(lcbor_array(&uri_list))
         } else {
-            result.push(uri_list[0].clone())
+            // Move the value instead of cloning
+            result.push(uri_list.into_iter().next().unwrap())
         }
     }
     lcbor_array(&result)
@@ -4036,16 +4063,31 @@ pub mod lcbor {
     }
     // CBOR encodes a byte string
     pub fn lcbor_bytes(bytes: &[u8]) -> Vec<u8> {
-        [&lcbor_type_arg(2, bytes.len() as u64), bytes].concat()
+        let header = lcbor_type_arg(2, bytes.len() as u64);
+        let mut result = Vec::with_capacity(header.len() + bytes.len());
+        result.extend_from_slice(&header);
+        result.extend_from_slice(bytes);
+        result
     }
     // CBOR encodes a text string
     pub fn lcbor_text(bytes: &[u8]) -> Vec<u8> {
         let text = std::str::from_utf8(bytes).unwrap(); // check that this is valid utf8
-        [&lcbor_type_arg(3, text.len() as u64), text.as_bytes()].concat()
+        let header = lcbor_type_arg(3, text.len() as u64);
+        let mut result = Vec::with_capacity(header.len() + text.len());
+        result.extend_from_slice(&header);
+        result.extend_from_slice(text.as_bytes());
+        result
     }
     // CBOR encodes an array
     pub fn lcbor_array(elements: &[Vec<u8>]) -> Vec<u8> {
-        [lcbor_type_arg(4, elements.len() as u64), elements.concat()].concat()
+        let total_size: usize = elements.iter().map(|e| e.len()).sum();
+        let header = lcbor_type_arg(4, elements.len() as u64);
+        let mut result = Vec::with_capacity(header.len() + total_size);
+        result.extend_from_slice(&header);
+        for element in elements {
+            result.extend_from_slice(element);
+        }
+        result
     }
     pub const CBOR_FALSE: u8 = 20;
     pub const CBOR_TRUE: u8 = 21;

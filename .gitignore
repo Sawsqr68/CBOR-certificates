@@ -26,3 +26,6 @@ report.xml
 # Rust build artifacts
 c509_demo_impl/target/
 c509_demo_impl/Cargo.lock
+# Test output files
+could_convert/*.hex
+failed_convert/*.hex
