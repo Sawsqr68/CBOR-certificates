@@ -166,8 +166,8 @@ Options are:
     let certs = match &first_arg[..] {
         "f" => vec![parse_x509_cert(std::fs::read(second_arg).expect("No such file!"))],
         "c" => vec![parse_c509_cert(cleanup(std::fs::read(second_arg).expect("No such file!")), true)],
-        "l" => vec![loop_on_x509_cert(std::fs::read(second_arg).expect("No such file!"), "", 0, 0)],
-        "ll" => loop_on_certs_from_tls(&second_arg, 0),
+        "l" => vec![convert_and_verify_x509_cert(std::fs::read(second_arg).expect("No such file!"), "", 0, 0)],
+        "ll" => verify_certs_from_tls_connection(&second_arg, 0),
         "u" => get_certs_from_tls(second_arg),
         "t" => read_hosts_from_file(&second_arg),
         _ => panic!("expected f, c, u, l, ll or t"),
@@ -192,31 +192,31 @@ fn get_certs_from_tls(domain_name: String) -> Vec<Cert> {
 /******************************************************************************************************/
 
 // make a TLS connection to get server certificate chain/bag
-fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
+fn verify_certs_from_tls_connection(domain_name: &String, certificate_number: i64) -> Vec<Cert> {
     let mut config = rustls::ClientConfig::new();
     config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
     let dns_name = webpki::DNSNameRef::try_from_ascii_str(&domain_name).unwrap();
-    let mut sess = rustls::ClientSession::new(&std::sync::Arc::new(config), dns_name);
+    let mut tls_session = rustls::ClientSession::new(&std::sync::Arc::new(config), dns_name);
     let conn_addr = domain_name.to_owned() + ":443";
 
-    let sock_test = std::net::TcpStream::connect(conn_addr);
+    let socket_result = std::net::TcpStream::connect(conn_addr);
     let mut sock: std::net::TcpStream; // = std::net::TcpStream::connect(conn_addr).unwrap();
                                        // let mut fail_now = false;
-    if let Ok(stream) = sock_test {
+    if let Ok(stream) = socket_result {
         sock = stream;
-        let mut tls = rustls::Stream::new(&mut sess, &mut sock);
+        let mut tls = rustls::Stream::new(&mut tls_session, &mut sock);
 
         if let Ok(_) = tls.write_all(b"GET / HTTP/1.1") {
             tls.flush().unwrap();
-            let mut ugly_counter = 0;
+            let mut chain_index = 0;
             tls.sess
                 .get_peer_certificates()
                 .unwrap()
                 .iter()
                 .map(|c| {
-                    loop_on_x509_cert(c.0.clone(), domain_name.as_str(), no, {
-                        ugly_counter += 1;
-                        ugly_counter
+                    convert_and_verify_x509_cert(c.0.clone(), domain_name.as_str(), certificate_number, {
+                        chain_index += 1;
+                        chain_index
                     })
                 })
                 .collect()
@@ -233,26 +233,26 @@ fn loop_on_certs_from_tls(domain_name: &String, no: i64) -> Vec<Cert> {
 /******************************************************************************************************/
 /******************************************************************************************************/
 // Parse a DER encoded X509 and encode it as C509, re-encode back to X.509 and check if successful
-fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
-    let oi = input.clone();
-    let ooi = input.clone();
+fn convert_and_verify_x509_cert(input: Vec<u8>, host: &str, certificate_number: i64, chain_index: u8) -> Cert {
+    let original_input = input.clone();
+    let original_input_copy = input.clone();
     let parsed_cert = parse_x509_cert(input);
     let reversed_cert = parse_c509_cert(lcbor_array(&parsed_cert.cbor), false);
     //let rev_copy = reversed_cert.der.clone();
 
-    let ndate = chrono::Local::now();
-    let ts = ndate.format("%Y-%m-%d_%H:%M:%S.%s");
+    let current_date = chrono::Local::now();
+    let timestamp = current_date.format("%Y-%m-%d_%H:%M:%S.%s");
 
-    let correct_input_path = "../could_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
-    let failed_input_path = "../failed_convert/".to_string() + host + "_" + &sub_no.to_string() + "_" + &ts.to_string();
+    let correct_input_path = "../could_convert/".to_string() + host + "_" + &chain_index.to_string() + "_" + &timestamp.to_string();
+    let failed_input_path = "../failed_convert/".to_string() + host + "_" + &chain_index.to_string() + "_" + &timestamp.to_string();
     let write_path; 
 
-    if reversed_cert.der == oi {
-        info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), correct_input_path);
+    if reversed_cert.der == original_input {
+        info!("The input X.509 certificate for host {} with number {} was successfully encoded and reconstructed. {} vs {}\nStoring file as {}", host, certificate_number, original_input.len(), reversed_cert.der.len(), correct_input_path);
         write_path = &correct_input_path;
     } else {
         print_str_warning("File re-encoding failure");
-        warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, no, oi.len(), reversed_cert.der.len(), failed_input_path);
+        warn!("The input X.509 certificate for host {} with number {} COULD NOT be encoded and reconstructed. {} vs {}\nStoring file as {}", host, certificate_number, original_input.len(), reversed_cert.der.len(), failed_input_path);
         write_path = &failed_input_path;
     }
     let write_input_path = write_path.to_owned() + ".input.hex";
@@ -260,13 +260,13 @@ fn loop_on_x509_cert(input: Vec<u8>, host: &str, no: i64, sub_no: u8) -> Cert {
     let mut input_file = File::create(write_input_path).expect("File not found");
     let mut output_file = File::create(write_output_path).expect("File not found");
 
-    for byte in oi {
+    for byte in original_input {
         let _ = write!(input_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
     for byte in reversed_cert.der {
         let _ = write!(output_file, "{:02X} ", byte); // Writes each byte as a 2-digit uppercase hex
     }
-    Cert { der: ooi, cbor: Vec::new() }
+    Cert { der: original_input_copy, cbor: Vec::new() }
 }
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -278,11 +278,11 @@ fn read_hosts_from_file(filename: &str) -> Vec<Cert> {
             .map(String::from) // Convert each slice into a String
             .collect() // Gather them together into a vector
     };
-    let mut counter = 0;
+    let mut certificate_counter = 0;
     for host in host_vector {
-        info!("Testing {} with number {}", host, counter);
-        loop_on_certs_from_tls(&host, counter);
-        counter += 1;
+        info!("Testing {} with number {}", host, certificate_counter);
+        verify_certs_from_tls_connection(&host, certificate_counter);
+        certificate_counter += 1;
     }
     //Cert { der: Vec::new(), cbor: Vec::new() }
     Vec::new()
@@ -330,17 +330,17 @@ fn parse_x509_cert(input: Vec<u8>) -> Cert {
     // issuer
     output.push(cbor_encode_name(issuer));
     // validity
-    let c_not_before = cbor_encode_time(not_before, 0);
-    let c_not_after = cbor_encode_time(not_after, 0);
+    let cbor_not_before = cbor_encode_time(not_before, 0);
+    let cbor_not_after = cbor_encode_time(not_after, 0);
     
-    if c_not_after < c_not_before {
+    if cbor_not_after < cbor_not_before {
       warn!("Pre-2000 time bug, trying to circumvent");
       output.push(cbor_encode_time(not_before, 1));
       
     } else {
-      output.push(c_not_before);
+      output.push(cbor_not_before);
     }
-    output.push(c_not_after);
+    output.push(cbor_not_after);
     // subject
     output.push(cbor_encode_name(subject));
     // subjectPublicKeyInfo
@@ -2159,15 +2159,15 @@ fn parse_cbor_time(input: &Value) -> (Vec<u8>, i64) {
         Value::Integer(val) => {
 
             trace!("parse_cbor_time, incoming ts: {}", *val);
-            let ts = chrono::TimeZone::timestamp(&chrono::Utc, *val as i64, 0);
+            let timestamp = chrono::TimeZone::timestamp(&chrono::Utc, *val as i64, 0);
             if ASN1_UTC_TIME_MAX < *val as i64 {
                 type_flag = ASN1_GEN_TIME;
                 //using four digit year format to match GEN time format
-                (ts.format("%Y%m%d%H%M%SZ").to_string(), *val)
+                (timestamp.format("%Y%m%d%H%M%SZ").to_string(), *val)
             } //else if (*val as i64) < ASN1_UTC_TIME_Y2K {            panic!("Unresolved pre 2000 date handling bug, aborting");            }
             else {
                 //using two digit year format to match UTC time format
-                (ts.format("%y%m%d%H%M%SZ").to_string(), *val)
+                (timestamp.format("%y%m%d%H%M%SZ").to_string(), *val)
             }
         }
         Value::Null => {
@@ -2390,7 +2390,7 @@ fn check_and_reconstruct_pub_key_mac(_pub_key: Vec<u8>, _key_id: i64) -> Vec<u8>
 
 //***************************************************************************************************************************************
 //***************************************************************************************************************************************
-fn parse_cbor_extensions(input: &Value, ts_offset: i64) -> Vec<u8> {
+fn parse_cbor_extensions(input: &Value, timestamp_offset: i64) -> Vec<u8> {
     //let mut parsed_extensions = Vec::new();
     let mut parsed_extensions_arr = Vec::new();
     match input {
@@ -2453,7 +2453,7 @@ fn parse_cbor_extensions(input: &Value, ts_offset: i64) -> Vec<u8> {
                                     dummy
                                 }
                                 EXT_SCT_LIST => {
-                                    let dummy = parse_cbor_ext_sct_list(&extension_array[i + 1], *ext_type < 0, ts_offset);
+                                    let dummy = parse_cbor_ext_sct_list(&extension_array[i + 1], *ext_type < 0, timestamp_offset);
                                     debug!("parse_cbor_extensions, EXT_SCT_LIST: {:02x?}", dummy);
                                     dummy
                                 }
@@ -3368,11 +3368,11 @@ SignedCerticateTimestamp = (
    SignedCertificateTimestamps = [ + SignedCerticateTimestamp ]
 
 */
-fn parse_cbor_ext_sct_list(extension_val: &Value, critical: bool, ts_offset: i64) -> Vec<u8> {
+fn parse_cbor_ext_sct_list(extension_val: &Value, critical: bool, timestamp_offset: i64) -> Vec<u8> {
     let mut ext_val_arr = Vec::new();
     let mut sct_size = 0;
     let mut total_tally = 0;
-    let ts_os_ms = 1000 * ts_offset as i64;
+    let timestamp_offset_ms = 1000 * timestamp_offset as i64;
 
     let mut oid = EXT_SCT_LIST_OID.to_der_vec().unwrap();
     if critical {
@@ -3404,9 +3404,9 @@ fn parse_cbor_ext_sct_list(extension_val: &Value, critical: bool, ts_offset: i64
                 }
                 match sct_array.get(i + 1).unwrap() {
                     Value::Integer(ts) => {
-                        trace!("parse_cbor_ext_sct_list, handle ts {} and notBefore {}", ts, ts_os_ms);
-                        let o_ts = (*ts as i64) + ts_os_ms;
-                        let b = o_ts.to_be_bytes();
+                        trace!("parse_cbor_ext_sct_list, handle ts {} and notBefore {}", ts, timestamp_offset_ms);
+                        let offset_timestamp = (*ts as i64) + timestamp_offset_ms;
+                        let b = offset_timestamp.to_be_bytes();
                         ext_val_arr.extend(b);
                         sct_size += 8;
                     }
